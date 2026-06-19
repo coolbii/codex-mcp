@@ -1,23 +1,22 @@
 /**
- * auth.ts — owner-token authentication, shaped like OAuth discovery.
+ * auth.ts — authentication wiring, with two modes.
  *
- * DECISION (see docs/security.md §Auth): for a single-user server the simplest
- * *correct* design is a static owner bearer token compared in constant time,
- * wrapped in the SDK's spec machinery so that:
- *   - an unauthenticated /mcp request returns 401 with a
- *     `WWW-Authenticate: Bearer …, resource_metadata="…"` challenge, and
- *   - `/.well-known/oauth-protected-resource[/mcp]` is served, so a discovering
- *     client behaves correctly.
+ * AUTH_MODE=owner_token (default): a static owner bearer token compared in
+ * constant time, wrapped in the SDK's spec machinery so an unauthenticated /mcp
+ * request returns 401 + `WWW-Authenticate: Bearer …, resource_metadata="…"` and
+ * `/.well-known/oauth-protected-resource` is served. Works for local clients
+ * (Claude Desktop / Inspector / curl) — but NOT ChatGPT (its connector can't send
+ * a custom Authorization header).
  *
- * INTEROP CAVEAT (verified during research): ChatGPT Developer Mode offers only
- * OAuth / No-auth / Mixed and cannot reliably send a custom Authorization
- * header, so the owner-token path works for local clients (Claude Desktop, the
- * MCP Inspector, curl) but NOT for ChatGPT. Connecting ChatGPT requires the
- * OAuth 2.1 + PKCE proxy milestone (ProxyOAuthServerProvider + mcpAuthRouter).
- * This module is structured so that path slots in beside it later.
+ * AUTH_MODE=oauth: an embedded OAuth 2.1 authorization server (see
+ * oauth-provider.ts) mounted via the SDK's `mcpAuthRouter`. This is what lets
+ * ChatGPT web connect (DCR + PKCE; the OWNER_TOKEN is the login password). The
+ * owner token is ALSO still accepted as a bearer in this mode, so local clients
+ * keep working.
  */
 import { timingSafeEqual } from "node:crypto";
 import {
+  mcpAuthRouter,
   mcpAuthMetadataRouter,
   getOAuthProtectedResourceMetadataUrl,
 } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -25,13 +24,14 @@ import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middlew
 import type { OAuthTokenVerifier } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { OAuthMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
-import type { RequestHandler, Router } from "express";
+import { Router, type RequestHandler } from "express";
 import type { AppConfig } from "./config.js";
+import { DevspaceOAuthProvider } from "./oauth-provider.js";
 import { audit } from "./audit-log.js";
 
 export interface AuthBundle {
-  /** OAuth discovery docs (unauthenticated). null when auth is disabled. */
-  metadataRouter: Router | null;
+  /** Unauthenticated discovery / OAuth routes, mounted at app root. null = none. */
+  router: RequestHandler | null;
   /** Gate to apply to every /mcp method. Pass-through when auth disabled. */
   requireAuth: RequestHandler;
   /** Canonical resource URL of this server (origin + /mcp). */
@@ -48,14 +48,37 @@ function constantTimeEqual(a: string, b: string): boolean {
 export function buildAuth(config: AppConfig): AuthBundle {
   const base = config.publicBaseUrl ?? `http://${config.host}:${config.port}`;
   const resourceUrl = new URL("/mcp", base);
+  const issuerUrl = new URL(base);
 
   if (!config.requireAuth) {
     const passThrough: RequestHandler = (_req, _res, next) => next();
-    return { metadataRouter: null, requireAuth: passThrough, resourceUrl };
+    return { router: null, requireAuth: passThrough, resourceUrl };
   }
 
-  const ownerToken = config.ownerToken;
+  // -------- AUTH_MODE=oauth : embedded OAuth 2.1 AS (for ChatGPT) --------
+  if (config.authMode === "oauth") {
+    const provider = new DevspaceOAuthProvider(config, resourceUrl, issuerUrl);
+    const oauthRouter = mcpAuthRouter({
+      provider,
+      issuerUrl,
+      resourceServerUrl: resourceUrl,
+      scopesSupported: ["mcp"],
+      resourceName: "DevSpace self-hosted filesystem MCP",
+    });
+    const root = Router();
+    root.use(provider.loginRouter()); // POST /oauth/login (owner-password submit)
+    root.use(oauthRouter); // well-knowns + /authorize + /token + /register + /revoke
 
+    const requireAuth = requireBearerAuth({
+      verifier: provider, // verifyAccessToken accepts OAuth tokens AND the owner token
+      requiredScopes: ["mcp"],
+      resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceUrl),
+    });
+    return { router: root, requireAuth, resourceUrl };
+  }
+
+  // -------- AUTH_MODE=owner_token : static bearer token (default) --------
+  const ownerToken = config.ownerToken;
   const verifier: OAuthTokenVerifier = {
     async verifyAccessToken(token: string): Promise<AuthInfo> {
       if (!constantTimeEqual(token, ownerToken)) {
@@ -67,17 +90,14 @@ export function buildAuth(config: AppConfig): AuthBundle {
         token,
         clientId: "owner",
         scopes: ["mcp"],
-        // Sliding 1h window. A static token re-verifies every request, so it
-        // never actually expires — but the field is required to be honoured.
         expiresAt: Math.floor(Date.now() / 1000) + 3600,
         resource: resourceUrl,
       };
     },
   };
 
-  // Advertised authorization-server metadata. In owner-token mode we do not run
-  // an /authorize or /token endpoint; clients that attempt the full OAuth dance
-  // fail closed (which is correct — only a pasted bearer token works here).
+  // In owner-token mode we do not run /authorize or /token; clients that try the
+  // full OAuth dance fail closed (correct — only a pasted bearer token works).
   const oauthMetadata: OAuthMetadata = {
     issuer: resourceUrl.origin,
     authorization_endpoint: `${resourceUrl.origin}/authorize`,
@@ -86,19 +106,16 @@ export function buildAuth(config: AppConfig): AuthBundle {
     grant_types_supported: ["authorization_code"],
     code_challenge_methods_supported: ["S256"],
   };
-
   const metadataRouter = mcpAuthMetadataRouter({
     oauthMetadata,
     resourceServerUrl: resourceUrl,
     resourceName: "DevSpace self-hosted filesystem MCP",
     scopesSupported: ["mcp"],
   });
-
   const requireAuth = requireBearerAuth({
     verifier,
     requiredScopes: ["mcp"],
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceUrl),
   });
-
-  return { metadataRouter, requireAuth, resourceUrl };
+  return { router: metadataRouter, requireAuth, resourceUrl };
 }

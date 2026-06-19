@@ -13,6 +13,10 @@ auth.json
 *.pem
 *.key
 
+# OAuth token store (holds client + refresh tokens)
+data/
+devspace-oauth.json
+
 # logs
 *.log
 logs/

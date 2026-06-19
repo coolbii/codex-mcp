@@ -74,11 +74,37 @@ The owner token is the audience boundary. If you later move to JWTs, verify the
 `aud`/`resource` claim equals the canonical server URL in `verifyAccessToken`,
 and never accept foreign-audience tokens or pass client tokens upstream.
 
-**ChatGPT gap (verified):** ChatGPT Developer Mode offers only OAuth / No-auth /
-Mixed and cannot reliably send a custom `Authorization` header, so owner-token
-auth does not interoperate with ChatGPT. The fix is the OAuth-proxy milestone;
-until then, use a local client. Do **not** "solve" this by setting
-`ALLOW_INSECURE_LOCAL` behind a tunnel — that is explicitly refused by config.
+**ChatGPT (`AUTH_MODE=oauth`).** ChatGPT's connector only speaks OAuth (it can't
+send a pasted token), so `src/oauth-provider.ts` is an embedded OAuth 2.1
+authorization server mounted via the SDK's `mcpAuthRouter`:
+
+- **DCR + PKCE S256.** ChatGPT self-registers (`/register`) and runs Authorization
+  Code + PKCE; the SDK verifies `code_verifier` against our stored challenge and
+  validates `redirect_uri` against the registered client (open-redirect prevented
+  at the SDK layer).
+- **Owner-password login.** `/authorize` renders a login page keyed by an opaque
+  server-stored ticket; you enter the `OWNER_TOKEN` (constant-time compared). The
+  browser only holds the ticket, so it cannot tamper with
+  client_id / redirect_uri / code_challenge.
+- **Opaque tokens.** Access/refresh tokens + auth codes are 256-bit random; codes
+  are single-use + short-TTL; **refresh tokens rotate** on every use (a leaked
+  refresh token dies once the real client next refreshes). Only clients + refresh
+  tokens persist (`data/devspace-oauth.json`, 0600); access tokens / codes /
+  pending logins stay in memory.
+- **Brute-force defense.** `/oauth/login` is rate-limited per source and a ticket
+  is **burned after 5 wrong passwords**, forcing the attacker back through the
+  SDK-rate-limited `/authorize`. Auth pages send `X-Frame-Options: DENY`,
+  CSP `frame-ancestors 'none'`, and `Cache-Control: no-store`.
+- **Bounded store.** DCR is open by design (ChatGPT self-registers); the client
+  set is capped with oldest-eviction so `/register` spam can't grow the file.
+- The owner token is **still accepted as a bearer** in oauth mode (local clients).
+  In oauth mode it is your login password *and* a bearer — use a high-entropy
+  value (`randomBytes(32).base64url`), not a memorable passphrase.
+
+Connecting ChatGPT needs a public HTTPS tunnel — see [chatgpt-setup.md](chatgpt-setup.md).
+The OAuth/discovery endpoints are intentionally reachable without the Host/Origin
+guard (they carry no file data); only `/mcp` is guarded + token-gated. Do **not**
+"solve" anything by setting `ALLOW_INSECURE_LOCAL` behind a tunnel — config refuses it.
 
 ## DNS-rebinding / Host / Origin
 

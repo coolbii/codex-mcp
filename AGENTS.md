@@ -54,6 +54,14 @@ remove them:
   reintroduce a case-sensitive `path.relative` check in config.ts/path-guard.ts.
 - **Process-group kill.** The shell timeout/output-cap kill the whole group
   (`detached` + `process.kill(-pid)`).
+- **OAuth (`AUTH_MODE=oauth`, for ChatGPT).** `src/oauth-provider.ts`:
+  `/oauth/login` is rate-limited per source AND burns the ticket after 5 wrong
+  passwords; refresh tokens rotate on use; the DCR client store is capped
+  (oldest-evicted); auth pages set anti-clickjacking + no-cache headers. The
+  owner password is `OWNER_TOKEN` compared with `timingSafeEqual`. Don't remove
+  any of these, don't log tokens, and keep only `clients` + `refreshTokens`
+  persisted (never access tokens / codes / the owner token). Verified by
+  `tests/oauth.test.ts` + `scripts/smoke-oauth.mjs`.
 
 ## Layered-defense rule
 

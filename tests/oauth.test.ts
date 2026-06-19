@@ -1,0 +1,294 @@
+import { it, expect, beforeAll, afterAll } from "vitest";
+import { createServer, type AddressInfo } from "node:net";
+import type { Server } from "node:http";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomBytes, createHash } from "node:crypto";
+import { loadConfig } from "../src/config.js";
+import { PathGuard } from "../src/path-guard.js";
+import { makeApp } from "../src/http.js";
+
+const OWNER = "owner_tok_" + "a".repeat(40);
+const b64url = (b: Buffer): string => b.toString("base64url");
+const REDIRECT = "http://localhost:9/cb";
+const INIT = JSON.stringify({
+  jsonrpc: "2.0",
+  id: 1,
+  method: "initialize",
+  params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "t", version: "0" } },
+});
+
+function freePort(): Promise<number> {
+  return new Promise((res) => {
+    const s = createServer();
+    s.listen(0, "127.0.0.1", () => {
+      const port = (s.address() as AddressInfo).port;
+      s.close(() => res(port));
+    });
+  });
+}
+
+let server: Server;
+let origin: string;
+let root: string;
+
+beforeAll(async () => {
+  root = mkdtempSync(join(tmpdir(), "devspace-oauthtest-"));
+  const port = await freePort();
+  const config = loadConfig({
+    transport: "http",
+    env: {
+      ALLOWED_ROOTS: root,
+      OWNER_TOKEN: OWNER,
+      AUTH_MODE: "oauth",
+      HOST: "127.0.0.1",
+      PORT: String(port),
+      OAUTH_STORE_PATH: join(root, "oauth.json"),
+    },
+    warn: () => {},
+  });
+  const app = makeApp(config, new PathGuard(config.allowedRoots));
+  await new Promise<void>((r) => {
+    server = app.listen(port, "127.0.0.1", () => r());
+  });
+  origin = `http://127.0.0.1:${port}`;
+});
+
+afterAll(() => {
+  server?.close();
+  rmSync(root, { recursive: true, force: true });
+});
+
+async function asMetadata(): Promise<Record<string, any>> {
+  return (await fetch(`${origin}/.well-known/oauth-authorization-server`)).json() as Promise<Record<string, any>>;
+}
+
+async function register(name: string): Promise<Record<string, any>> {
+  const as = await asMetadata();
+  const r = await fetch(as.registration_endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      client_name: name,
+      redirect_uris: [REDIRECT],
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+    }),
+  });
+  return r.json() as Promise<Record<string, any>>;
+}
+
+/** Drive /authorize → login → returns the auth code. */
+async function getCode(clientId: string, challenge: string): Promise<string> {
+  const as = await asMetadata();
+  const au = new URL(as.authorization_endpoint);
+  au.search = new URLSearchParams({
+    response_type: "code",
+    client_id: clientId,
+    redirect_uri: REDIRECT,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    state: "s1",
+    scope: "mcp",
+  }).toString();
+  const page = await (await fetch(au)).text();
+  const ticket = page.match(/name="ticket" value="([^"]+)"/)?.[1];
+  if (!ticket) throw new Error("no ticket");
+  const login = await fetch(`${origin}/oauth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ ticket, password: OWNER }).toString(),
+    redirect: "manual",
+  });
+  if (login.status !== 302) throw new Error(`login status ${login.status}`);
+  const code = new URL(login.headers.get("location")!).searchParams.get("code");
+  if (!code) throw new Error("no code");
+  return code;
+}
+
+it("serves AS metadata advertising S256 + DCR", async () => {
+  const m = await asMetadata();
+  expect(m.code_challenge_methods_supported).toContain("S256");
+  expect(m.registration_endpoint).toBeTruthy();
+});
+
+it("unauthenticated /mcp returns 401 with resource_metadata", async () => {
+  const r = await fetch(`${origin}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: INIT,
+  });
+  expect(r.status).toBe(401);
+  expect(r.headers.get("www-authenticate") ?? "").toMatch(/resource_metadata=/);
+});
+
+it("owner token still works as a bearer in oauth mode", async () => {
+  const r = await fetch(`${origin}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${OWNER}`,
+    },
+    body: INIT,
+  });
+  expect(r.status).toBe(200);
+});
+
+it("completes the full DCR → PKCE → token → authed /mcp flow", async () => {
+  const client = await register("flow");
+  const verifier = b64url(randomBytes(32));
+  const challenge = b64url(createHash("sha256").update(verifier).digest());
+  const code = await getCode(client.client_id, challenge);
+
+  const as = await asMetadata();
+  const tok = (await (
+    await fetch(as.token_endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: REDIRECT,
+        client_id: client.client_id,
+        code_verifier: verifier,
+      }).toString(),
+    })
+  ).json()) as Record<string, any>;
+  expect(tok.access_token).toBeTruthy();
+  expect(tok.refresh_token).toBeTruthy();
+
+  const mcp = await fetch(`${origin}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${tok.access_token}`,
+    },
+    body: INIT,
+  });
+  expect(mcp.status).toBe(200);
+  expect(await mcp.text()).toContain("devspace");
+});
+
+it("rejects a token exchange with the wrong PKCE verifier", async () => {
+  const client = await register("badpkce");
+  const challenge = b64url(createHash("sha256").update("the-real-verifier").digest());
+  const code = await getCode(client.client_id, challenge);
+  const as = await asMetadata();
+  const tok = await fetch(as.token_endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: REDIRECT,
+      client_id: client.client_id,
+      code_verifier: "a-different-wrong-verifier",
+    }).toString(),
+  });
+  expect(tok.ok).toBe(false);
+});
+
+it("rejects an auth code replay (single use)", async () => {
+  const client = await register("replay");
+  const verifier = b64url(randomBytes(32));
+  const challenge = b64url(createHash("sha256").update(verifier).digest());
+  const code = await getCode(client.client_id, challenge);
+  const as = await asMetadata();
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: REDIRECT,
+    client_id: client.client_id,
+    code_verifier: verifier,
+  }).toString();
+  const first = await fetch(as.token_endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  expect(first.ok).toBe(true);
+  const second = await fetch(as.token_endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body,
+  });
+  expect(second.ok).toBe(false);
+});
+
+it("rotates the refresh token (the old one stops working)", async () => {
+  const client = await register("rotate");
+  const verifier = b64url(randomBytes(32));
+  const challenge = b64url(createHash("sha256").update(verifier).digest());
+  const code = await getCode(client.client_id, challenge);
+  const as = await asMetadata();
+  const tok = (await (
+    await fetch(as.token_endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: REDIRECT, client_id: client.client_id, code_verifier: verifier }).toString(),
+    })
+  ).json()) as Record<string, any>;
+  const r1 = await fetch(as.token_endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tok.refresh_token, client_id: client.client_id }).toString(),
+  });
+  const rotated = (await r1.json()) as Record<string, any>;
+  expect(rotated.refresh_token).toBeTruthy();
+  expect(rotated.refresh_token).not.toBe(tok.refresh_token); // rotated
+  // the ORIGINAL refresh token must no longer work
+  const reuse = await fetch(as.token_endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tok.refresh_token, client_id: client.client_id }).toString(),
+  });
+  expect(reuse.ok).toBe(false);
+});
+
+it("burns the login ticket after repeated wrong passwords", async () => {
+  const client = await register("lockout");
+  const challenge = b64url(createHash("sha256").update("v").digest());
+  const as = await asMetadata();
+  const au = new URL(as.authorization_endpoint);
+  au.search = new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: REDIRECT, code_challenge: challenge, code_challenge_method: "S256", scope: "mcp" }).toString();
+  const ticket = (await (await fetch(au)).text()).match(/name="ticket" value="([^"]+)"/)?.[1] as string;
+  const tryLogin = (pw: string) =>
+    fetch(`${origin}/oauth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ ticket, password: pw }).toString(),
+      redirect: "manual",
+    });
+  for (let i = 0; i < 4; i++) expect((await tryLogin("nope")).status).toBe(401);
+  expect((await tryLogin("nope")).status).toBe(429); // 5th burns the ticket
+  // even the CORRECT password now fails — the ticket is dead
+  const after = await tryLogin(OWNER);
+  expect(after.status).not.toBe(302);
+});
+
+it("rejects login with the wrong owner password", async () => {
+  const client = await register("badpw");
+  const challenge = b64url(createHash("sha256").update("v").digest());
+  const as = await asMetadata();
+  const au = new URL(as.authorization_endpoint);
+  au.search = new URLSearchParams({
+    response_type: "code",
+    client_id: client.client_id,
+    redirect_uri: REDIRECT,
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+    scope: "mcp",
+  }).toString();
+  const ticket = (await (await fetch(au)).text()).match(/name="ticket" value="([^"]+)"/)?.[1];
+  const login = await fetch(`${origin}/oauth/login`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ ticket: ticket!, password: "wrong-password" }).toString(),
+    redirect: "manual",
+  });
+  expect(login.status).toBe(401);
+});

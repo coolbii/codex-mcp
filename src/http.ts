@@ -35,9 +35,9 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
     res.json({ ok: true, name: "devspace", version: "0.1.0" });
   });
 
-  // OAuth discovery docs (unauthenticated) — only when auth is on.
-  if (auth.metadataRouter) {
-    app.use(auth.metadataRouter);
+  // Discovery + (in oauth mode) the OAuth endpoints — unauthenticated, root.
+  if (auth.router) {
+    app.use(auth.router);
   }
 
   // Edge Host/Origin guard for the MCP endpoint.
@@ -108,7 +108,12 @@ export function startHttp(config: AppConfig): Promise<Server> {
       const where = `http://${config.host}:${config.port}/mcp`;
       process.stderr.write(`\n[devspace] Streamable HTTP MCP listening on ${where}\n`);
       process.stderr.write(`[devspace] allowed roots:\n${config.allowedRoots.map((r) => `  - ${r}`).join("\n")}\n`);
-      process.stderr.write(`[devspace] auth: ${config.requireAuth ? "owner bearer token REQUIRED" : "DISABLED (loopback opt-out)"}\n`);
+      const authDesc = !config.requireAuth
+        ? "DISABLED (loopback opt-out)"
+        : config.authMode === "oauth"
+          ? "OAuth 2.1 embedded AS (for ChatGPT) + owner token"
+          : "owner bearer token REQUIRED";
+      process.stderr.write(`[devspace] auth: ${authDesc}\n`);
       process.stderr.write(`[devspace] shell: ${config.enableShell ? config.shellMode : "disabled"}\n`);
       if (config.requireAuth && config.ownerTokenGenerated) {
         process.stderr.write(

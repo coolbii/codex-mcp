@@ -50,6 +50,16 @@ export interface AppConfig {
   ownerToken: string;
   ownerTokenGenerated: boolean;
 
+  /**
+   * 'owner_token' (default): static bearer token for local clients (Claude
+   * Desktop / Inspector / curl). 'oauth': embedded OAuth 2.1 AS so ChatGPT web
+   * can connect (DCR + PKCE; OWNER_TOKEN doubles as the login password). The
+   * owner token is still accepted as a bearer in oauth mode.
+   */
+  authMode: "owner_token" | "oauth";
+  /** Persisted OAuth client + refresh-token store (oauth mode). 0600. */
+  oauthStorePath: string;
+
   /** DNS-rebinding protection inputs for the HTTP transport. */
   enableDnsRebindingProtection: boolean;
   allowedHosts: string[];
@@ -305,6 +315,34 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
     }
   }
 
+  // ---- auth mode: owner_token (default) vs embedded OAuth AS (for ChatGPT) ----
+  const rawAuthMode = (env.AUTH_MODE ?? "owner_token").trim().toLowerCase();
+  if (rawAuthMode !== "owner_token" && rawAuthMode !== "oauth") {
+    throw new ConfigError(`AUTH_MODE must be "owner_token" or "oauth", got "${rawAuthMode}".`);
+  }
+  const authMode = rawAuthMode;
+  if (authMode === "oauth" && isHttp) {
+    if (!requireAuth) {
+      throw new ConfigError(
+        "AUTH_MODE=oauth cannot be combined with ALLOW_INSECURE_LOCAL — OAuth requires auth.",
+      );
+    }
+    if (!publicBaseUrl) {
+      warn(
+        "AUTH_MODE=oauth without PUBLIC_BASE_URL — OAuth issuer/resource falls back to the loopback URL. " +
+          "Fine for local Inspector testing, but ChatGPT needs PUBLIC_BASE_URL set to your https tunnel.",
+      );
+    }
+    if (ownerTokenGenerated) {
+      warn(
+        "OAuth login password = the generated ephemeral OWNER_TOKEN (changes on restart). " +
+          "Set OWNER_TOKEN to keep your login stable.",
+      );
+    }
+  }
+  const oauthStorePath =
+    (env.OAUTH_STORE_PATH ?? "").trim() || join(process.cwd(), "data", "devspace-oauth.json");
+
   // ---- DNS-rebinding / Host / Origin ----
   const enableDnsRebindingProtection = bool(
     env.ENABLE_DNS_REBINDING_PROTECTION,
@@ -376,6 +414,8 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
     requireAuth,
     ownerToken,
     ownerTokenGenerated,
+    authMode,
+    oauthStorePath,
     enableDnsRebindingProtection,
     allowedHosts: finalHosts,
     allowedOrigins: finalOrigins,

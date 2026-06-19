@@ -25,7 +25,9 @@ written so you can read every line. The design rule throughout:
   home dir, `/`, a dir containing your home, or a secrets dir (`~/.ssh`, …).
 - **Auth** — the HTTP transport requires an owner bearer token (constant-time
   compare), wrapped in spec-shaped OAuth discovery so unauthenticated requests
-  get a proper `401` + `WWW-Authenticate` challenge.
+  get a proper `401` + `WWW-Authenticate` challenge. For **ChatGPT web**, an
+  embedded OAuth 2.1 server (`AUTH_MODE=oauth`) adds DCR + PKCE + owner-password
+  login.
 - **DNS-rebinding / cross-origin** — an edge `Host`/`Origin` allowlist runs
   *plus* the SDK transport's own protection (belt and suspenders).
 - **Shell off by default** — when enabled, it is an allowlist of read-only
@@ -121,20 +123,29 @@ curl -s -X POST http://127.0.0.1:7676/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
-### ChatGPT (Developer Mode, via an HTTPS tunnel)
+### ChatGPT web (Developer Mode, via an HTTPS tunnel)
 
-> ⚠️ **Important, verified caveat.** ChatGPT Developer Mode only offers
-> **OAuth / No-auth / Mixed** auth and cannot reliably send a custom
-> `Authorization` header — so the **owner-token auth in this build does not
-> work with ChatGPT yet**. ChatGPT support requires the **OAuth 2.1 + PKCE proxy
-> milestone** (see [Roadmap](#roadmap)). The HTTP endpoint, `/mcp` shape,
-> Host/Origin hardening, and `readOnlyHint` annotations are already in place for
-> that step. For now, use a local client.
+Supported via an **embedded OAuth 2.1 server** (`AUTH_MODE=oauth`). ChatGPT's
+connector only speaks OAuth (it can't send a pasted token), so devspace runs the
+OAuth dance itself: ChatGPT auto-registers (DCR) + PKCE, and you authorize once
+by entering your `OWNER_TOKEN` as the password.
 
-When the OAuth milestone lands, the flow is: run `npm run start:http`, expose it
-with `cloudflared tunnel --url http://127.0.0.1:7676`, set `PUBLIC_BASE_URL` and
-add the tunnel host to `ALLOWED_HOSTS`, then add the `…/mcp` URL as a custom MCP
-app in ChatGPT Developer Mode.
+```bash
+AUTH_MODE=oauth PUBLIC_BASE_URL=https://devspace.example.com \
+ALLOWED_HOSTS=devspace.example.com OWNER_TOKEN=<32+chars> \
+ALLOWED_ROOTS=/Users/you/code/sandbox npm run start:http
+```
+
+Expose `127.0.0.1:7676` with a Cloudflare named tunnel, then add
+`https://devspace.example.com/mcp` as a custom connector with **Authentication:
+OAuth**. The owner token still works as a bearer in this mode, so local clients
+keep working too.
+
+**Start here — end-to-end usage guide:
+[English](docs/usage-guide.md) · [繁體中文](docs/usage-guide.zh-TW.md).**
+Deeper reference (tunnel internals, de-risk rungs, troubleshooting) →
+[docs/chatgpt-setup.md](docs/chatgpt-setup.md). Verify the whole OAuth flow
+locally first with `node scripts/smoke-oauth.mjs`.
 
 ## Tools
 
@@ -157,9 +168,9 @@ Every call (except `list_roots`/`open_workspace`/`list_workspaces`) takes the
 
 ## Roadmap
 
-1. **OAuth 2.1 + PKCE proxy** (`ProxyOAuthServerProvider` + `mcpAuthRouter`)
-   wrapping an upstream IdP — unlocks ChatGPT. `verifyAccessToken` enforces the
-   `aud` claim against the canonical server URL.
+1. ✅ **ChatGPT web support** — embedded OAuth 2.1 AS (`AUTH_MODE=oauth`):
+   Dynamic Client Registration + PKCE + owner-password login, owner token still
+   accepted as a bearer. See [docs/chatgpt-setup.md](docs/chatgpt-setup.md).
 2. **Container/sandbox shell mode** (`--network=none`, read-only FS except the
    bind-mounted root, dropped caps) — the only *strong* boundary for command
    execution and the closure for the documented TOCTOU residual.
@@ -177,7 +188,8 @@ src/
   edit-tools.ts        write_file, edit_file, show_diff
   shell-tools.ts       run_command (disabled by default)
   host-origin-guard.ts edge DNS-rebinding / origin guard
-  auth.ts              owner-token auth + OAuth-shaped metadata
+  auth.ts              auth mode switch (owner-token / oauth)
+  oauth-provider.ts    embedded OAuth 2.1 AS (DCR + PKCE) for ChatGPT
   http.ts              Streamable HTTP transport
   stdio.ts             stdio transport
   mcp-server.ts        tool registration (zod schemas, hints)
