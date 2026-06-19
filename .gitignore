@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+
+# secrets & local config — NEVER commit
+.env
+.env.*
+!.env.example
+*.local
+auth.json
+*.pem
+*.key
+
+# logs
+*.log
+logs/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# test / coverage
+coverage/
+.nyc_output/
