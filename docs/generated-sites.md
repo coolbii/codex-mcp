@@ -69,3 +69,6 @@ parsed into an unterminated tag.
 
 This is a guardrail, not a design system. For higher quality output, prefer
 templates and design tokens rather than unconstrained generation.
+
+The current default visual direction is documented in
+[site-design-direction.md](site-design-direction.md).

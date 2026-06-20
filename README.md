@@ -170,7 +170,9 @@ Every call (except `list_roots`/`open_workspace`/`list_workspaces`) takes the
 `workspaceId` from `open_workspace`.
 
 Generated site previews are documented in
-[docs/generated-sites.md](docs/generated-sites.md).
+[docs/generated-sites.md](docs/generated-sites.md). The default visual direction
+for generated pages lives in
+[docs/site-design-direction.md](docs/site-design-direction.md).
 
 ## Roadmap
 

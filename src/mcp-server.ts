@@ -33,6 +33,12 @@ const SITE_WIDGET_URI_ALIASES = [
   "ui://devspace/site-preview.html",
 ] as const;
 const SITE_WIDGET_MIME = "text/html;profile=mcp-app";
+const SITE_DESIGN_DIRECTION =
+  "Generated sites should feel hand-designed, restrained, and domain-specific. " +
+  "Avoid generic AI SaaS styling: no decorative gradient blobs/orbs, no fake dashboard screenshots, " +
+  "no over-rounded card stacks, no purple-blue one-note palettes, no vague feature copy, and no oversized hero unless the brief requires it. " +
+  "Prefer quiet typography, clear hierarchy, compact sections, restrained color, real content structure, accessible contrast, " +
+  "8px-or-less radii, stable responsive layout, and complete HTML/CSS/JS files.";
 
 const entrySchema = z.object({
   name: z.string(),
@@ -188,7 +194,9 @@ export function buildMcpServer(
         "to get a workspaceId; pass that id to every other call. Discover with " +
         "list_directory / find_files / search_files before read_file. To change a " +
         "file, preview with show_diff, then write_file (new/overwrite) or edit_file " +
-        "(exact oldText→newText replacement). All paths are workspace-relative.",
+        "(exact oldText→newText replacement). All paths are workspace-relative. " +
+        "For create_site and update_site: " +
+        SITE_DESIGN_DIRECTION,
     },
   );
 
@@ -480,12 +488,19 @@ export function buildMcpServer(
     {
       title: "Create preview site",
       description:
-        "Use this when the user wants a new live website preview. Creates a local versioned static site and returns a preview URL rendered in ChatGPT.",
+        "Use this when the user wants a new live website preview. Creates a local versioned static site and returns a preview URL rendered in ChatGPT. " +
+        SITE_DESIGN_DIRECTION,
       inputSchema: {
         title: z.string().min(1).max(120),
         prompt: z.string().min(1).max(4000).describe("User intent or design brief for this site."),
-        html: z.string().optional().describe("Full index.html. If omitted, DevSpace creates a starter page."),
-        css: z.string().optional().describe("Full styles.css. If omitted, DevSpace creates starter styles."),
+        html: z
+          .string()
+          .optional()
+          .describe("Full index.html. Must be complete, semantic, accessible HTML. If omitted, DevSpace creates a starter page."),
+        css: z
+          .string()
+          .optional()
+          .describe("Full styles.css. Use restrained, product-specific styling. If omitted, DevSpace creates starter styles."),
         js: z.string().optional().describe("Full script.js. If omitted, DevSpace creates a tiny starter script."),
       },
       outputSchema: siteDetailsSchema,
@@ -512,13 +527,14 @@ export function buildMcpServer(
     {
       title: "Update preview site",
       description:
-        "Use this when the user wants changes to an existing generated site. Writes provided full files and commits a new local version.",
+        "Use this when the user wants changes to an existing generated site. Writes provided full files and commits a new local version. " +
+        SITE_DESIGN_DIRECTION,
       inputSchema: {
         siteId: z.string(),
         message: z.string().min(1).max(200).describe("Short git commit message describing the change."),
         title: z.string().min(1).max(120).optional(),
-        html: z.string().optional().describe("New full index.html. Omit to keep current file."),
-        css: z.string().optional().describe("New full styles.css. Omit to keep current file."),
+        html: z.string().optional().describe("New full index.html. Keep semantic structure complete. Omit to keep current file."),
+        css: z.string().optional().describe("New full styles.css. Keep styling restrained and specific. Omit to keep current file."),
         js: z.string().optional().describe("New full script.js. Omit to keep current file."),
       },
       outputSchema: siteDetailsSchema,
