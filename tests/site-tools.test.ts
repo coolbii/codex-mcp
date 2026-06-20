@@ -40,6 +40,23 @@ it("creates a versioned static site with a public preview URL", async () => {
   await expect(readFile(preview.absolutePath, "utf8")).resolves.toContain("Landing Page");
 });
 
+it("creates an archetype-based site without custom HTML", async () => {
+  fx = await makeFixture();
+  const sites = manager();
+
+  const site = await sites.createSite({
+    title: "Ops Console",
+    prompt: "Internal operations workspace",
+    archetype: "internal-dashboard",
+  });
+
+  expect(site.archetype).toBe("internal-dashboard");
+  const preview = await sites.previewFile(site.siteId, "");
+  const html = await readFile(preview.absolutePath, "utf8");
+  expect(html).toContain("Operations console");
+  expect(html).toContain("app-shell");
+});
+
 it("commits each meaningful site update", async () => {
   fx = await makeFixture();
   const sites = manager();

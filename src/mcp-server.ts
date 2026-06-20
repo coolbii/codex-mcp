@@ -22,7 +22,7 @@ import { findFiles, searchFiles } from "./search-tools.js";
 import { writeFile, editFile, showDiff } from "./edit-tools.js";
 import { runCommand } from "./shell-tools.js";
 import { audit } from "./audit-log.js";
-import { SiteManager } from "./site-tools.js";
+import { SiteManager, SITE_ARCHETYPES } from "./site-tools.js";
 
 const SERVER_NAME = "devspace";
 const SERVER_VERSION = "0.1.0";
@@ -38,7 +38,8 @@ const SITE_DESIGN_DIRECTION =
   "Avoid generic AI SaaS styling: no decorative gradient blobs/orbs, no fake dashboard screenshots, " +
   "no over-rounded card stacks, no purple-blue one-note palettes, no vague feature copy, and no oversized hero unless the brief requires it. " +
   "Prefer quiet typography, clear hierarchy, compact sections, restrained color, real content structure, accessible contrast, " +
-  "8px-or-less radii, stable responsive layout, and complete HTML/CSS/JS files.";
+  "8px-or-less radii, stable responsive layout, and complete HTML/CSS/JS files. " +
+  "Prefer choosing an archetype and omitting raw html/css unless the user explicitly asks for custom code.";
 
 const entrySchema = z.object({
   name: z.string(),
@@ -61,6 +62,7 @@ const siteSummarySchema = z.object({
   updatedAt: z.string(),
   previewUrl: z.string(),
   latestVersion: z.string().nullable(),
+  archetype: z.enum(SITE_ARCHETYPES).optional(),
 });
 const siteDetailsSchema = siteSummarySchema.extend({
   localPath: z.string(),
@@ -493,6 +495,10 @@ export function buildMcpServer(
       inputSchema: {
         title: z.string().min(1).max(120),
         prompt: z.string().min(1).max(4000).describe("User intent or design brief for this site."),
+        archetype: z
+          .enum(SITE_ARCHETYPES)
+          .optional()
+          .describe("Template archetype. Prefer this over custom html/css unless the user explicitly requests full custom code."),
         html: z
           .string()
           .optional()
@@ -512,9 +518,9 @@ export function buildMcpServer(
         ui: { resourceUri: SITE_WIDGET_URI },
       },
     },
-    async ({ title, prompt, html, css, js }) =>
+    async ({ title, prompt, archetype, html, css, js }) =>
       invoke("create_site", { path: "devspace-sites" }, async () => {
-        const site = await siteManager.createSite({ title, prompt, html, css, js });
+        const site = await siteManager.createSite({ title, prompt, archetype, html, css, js });
         return sitePreviewResult(
           `Created ${site.title}\nPreview: ${site.previewUrl}\nVersion: ${site.latestVersion}`,
           site as unknown as Record<string, unknown>,

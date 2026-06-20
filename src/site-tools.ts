@@ -10,6 +10,13 @@ import { PathGuard, isInsideOrEqual } from "./path-guard.js";
 const execFileAsync = promisify(execFile);
 const SITE_ID_RE = /^[a-z0-9][a-z0-9-]{2,63}$/;
 const VERSION_RE = /^[0-9a-f]{7,40}$/;
+export const SITE_ARCHETYPES = [
+  "b2b-saas-quiet",
+  "internal-dashboard",
+  "product-docs",
+  "editorial-product",
+] as const;
+export type SiteArchetype = (typeof SITE_ARCHETYPES)[number];
 
 export interface SiteSummary {
   siteId: string;
@@ -18,6 +25,7 @@ export interface SiteSummary {
   updatedAt: string;
   previewUrl: string;
   latestVersion: string | null;
+  archetype?: SiteArchetype;
 }
 
 export interface SiteVersion {
@@ -36,6 +44,7 @@ interface SiteMeta {
   title: string;
   createdAt: string;
   updatedAt: string;
+  archetype?: SiteArchetype;
 }
 
 export class SiteError extends Error {
@@ -73,6 +82,12 @@ function normalizeVersion(version: string | undefined): string | null {
   if (!version) return null;
   if (!VERSION_RE.test(version)) throw new SiteError("version must be a git commit hash");
   return version;
+}
+
+function normalizeArchetype(value: string | undefined): SiteArchetype {
+  if (!value) return "b2b-saas-quiet";
+  if ((SITE_ARCHETYPES as readonly string[]).includes(value)) return value as SiteArchetype;
+  throw new SiteError(`Unknown site archetype: ${value}`);
 }
 
 function defaultHtml(title: string, prompt: string): string {
@@ -300,6 +315,129 @@ article p {
 const defaultJs = `document.documentElement.dataset.ready = "true";
 `;
 
+interface SiteTemplate {
+  html: string;
+  css: string;
+  js: string;
+}
+
+function templateFor(archetype: SiteArchetype, title: string, prompt: string): SiteTemplate {
+  const safeTitle = escapeHtml(title);
+  const safePrompt = escapeHtml(prompt);
+  const commonJs = defaultJs;
+  if (archetype === "internal-dashboard") {
+    return {
+      html: `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${safeTitle}</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <aside class="rail">
+      <strong>${safeTitle}</strong>
+      <nav><a href="#overview">Overview</a><a href="#queue">Queue</a><a href="#health">Health</a></nav>
+    </aside>
+    <section class="workspace">
+      <header>
+        <p class="eyebrow">Operations console</p>
+        <h1>${safeTitle}</h1>
+        <p>${safePrompt}</p>
+      </header>
+      <section id="overview" class="metrics">
+        <article><span>Open risks</span><strong>12</strong><small>3 need owner review</small></article>
+        <article><span>Cycle time</span><strong>2.8d</strong><small>Down 14% this week</small></article>
+        <article><span>SLA health</span><strong>97%</strong><small>Within target range</small></article>
+      </section>
+      <section id="queue" class="table">
+        <div><strong>Enterprise onboarding</strong><span>Alex</span><em>Today</em></div>
+        <div><strong>Billing handoff</strong><span>Mina</span><em>Tomorrow</em></div>
+        <div><strong>API incident review</strong><span>Sam</span><em>Friday</em></div>
+      </section>
+    </section>
+  </main>
+  <script src="./script.js"></script>
+</body>
+</html>`,
+      css: dashboardCss,
+      js: commonJs,
+    };
+  }
+  if (archetype === "product-docs") {
+    return {
+      html: `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${safeTitle}</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="docs">
+    <nav><strong>${safeTitle}</strong><a href="#start">Start</a><a href="#concepts">Concepts</a><a href="#api">API</a></nav>
+    <article>
+      <p class="eyebrow">Product guide</p>
+      <h1>${safeTitle}</h1>
+      <p class="lede">${safePrompt}</p>
+      <section id="start"><h2>Start with one workspace</h2><p>Connect the first workflow, define owners, and review the generated status model before rollout.</p></section>
+      <section id="concepts"><h2>Core concepts</h2><p>Workspaces hold teams, queues hold work, and policies define escalation behavior.</p></section>
+      <section id="api"><h2>API shape</h2><pre><code>POST /v1/workspaces
+GET /v1/queues/:id/status</code></pre></section>
+    </article>
+  </main>
+  <script src="./script.js"></script>
+</body>
+</html>`,
+      css: docsCss,
+      js: commonJs,
+    };
+  }
+  if (archetype === "editorial-product") {
+    return {
+      html: `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${safeTitle}</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main>
+    <section class="feature">
+      <p class="eyebrow">Field note</p>
+      <h1>${safeTitle}</h1>
+      <p>${safePrompt}</p>
+    </section>
+    <section class="story">
+      <article><h2>Built around real usage</h2><p>Pages favor readable content blocks, quiet emphasis, and a steady rhythm over decorative effects.</p></article>
+      <article><h2>Designed to be edited</h2><p>Every section is plain HTML and CSS, so future iterations stay inspectable.</p></article>
+    </section>
+  </main>
+  <script src="./script.js"></script>
+</body>
+</html>`,
+      css: editorialCss,
+      js: commonJs,
+    };
+  }
+  return {
+    html: defaultHtml(title, prompt),
+    css: defaultCss,
+    js: commonJs,
+  };
+}
+
+const dashboardCss = `:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17201b;background:#eef1ee}*{box-sizing:border-box}body{margin:0}.app-shell{min-height:100vh;display:grid;grid-template-columns:240px 1fr}.rail{padding:24px;border-right:1px solid #d6ddd8;background:#f8faf8}.rail strong{display:block;margin-bottom:28px}.rail a{display:block;color:#52635b;text-decoration:none;padding:8px 0}.workspace{padding:32px;max-width:1120px}.eyebrow{margin:0 0 8px;color:#3f706b;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}h1{margin:0;font-size:42px;line-height:1.05;letter-spacing:0}header p:last-child{max-width:680px;color:#52635b;line-height:1.6}.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:28px 0}.metrics article,.table{border:1px solid #d6ddd8;border-radius:8px;background:#fff}.metrics article{padding:18px}.metrics span,.metrics small{display:block;color:#52635b}.metrics strong{display:block;font-size:36px;margin:8px 0}.table div{display:grid;grid-template-columns:1fr 140px 120px;gap:12px;padding:16px 18px;border-top:1px solid #eef1ee}.table div:first-child{border-top:0}.table span,.table em{color:#52635b;font-style:normal}@media(max-width:820px){.app-shell{grid-template-columns:1fr}.rail{border-right:0;border-bottom:1px solid #d6ddd8}.metrics{grid-template-columns:1fr}.table div{grid-template-columns:1fr}}`;
+
+const docsCss = `:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#17201b;background:#fbfbf7}*{box-sizing:border-box}body{margin:0}.docs{display:grid;grid-template-columns:260px minmax(0,760px);gap:54px;max-width:1120px;margin:0 auto;padding:42px 24px}nav{position:sticky;top:24px;height:max-content}nav strong,nav a{display:block}nav strong{margin-bottom:22px}nav a{padding:8px 0;color:#52635b;text-decoration:none}.eyebrow{margin:0 0 12px;color:#7b4e2f;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}h1{margin:0;font-size:52px;line-height:1.02;letter-spacing:0}.lede{font-size:20px;line-height:1.6;color:#52635b}section{padding:28px 0;border-top:1px solid #e1e3dc}h2{font-size:24px;margin:0 0 10px}p{line-height:1.65;color:#3d4b44}pre{padding:16px;border-radius:8px;background:#17201b;color:#f8faf8;overflow:auto}@media(max-width:820px){.docs{grid-template-columns:1fr;gap:24px}nav{position:static}h1{font-size:40px}}`;
+
+const editorialCss = `:root{font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#191d1b;background:#f4f0ea}*{box-sizing:border-box}body{margin:0}main{max-width:1040px;margin:0 auto;padding:64px 24px}.feature{min-height:56vh;display:grid;align-content:center}.eyebrow{margin:0 0 14px;color:#7b4e2f;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}h1{max-width:860px;margin:0;font-size:clamp(46px,8vw,86px);line-height:1;letter-spacing:0}.feature p:last-child{max-width:640px;font-size:20px;line-height:1.6;color:#4f5b55}.story{display:grid;grid-template-columns:1fr 1fr;gap:18px;border-top:1px solid #d8d0c4;padding-top:32px}article{padding:24px 0}h2{font-size:24px;margin:0 0 10px}article p{line-height:1.65;color:#4f5b55}@media(max-width:760px){.story{grid-template-columns:1fr}main{padding:36px 20px}}`;
+
 export class SiteManager {
   readonly baseDir: string;
 
@@ -323,6 +461,7 @@ export class SiteManager {
   async createSite(input: {
     title: string;
     prompt: string;
+    archetype?: SiteArchetype;
     html?: string;
     css?: string;
     js?: string;
@@ -333,14 +472,16 @@ export class SiteManager {
     await mkdir(dir, { recursive: false });
 
     const now = new Date().toISOString();
-    const meta: SiteMeta = { siteId, title: input.title, createdAt: now, updatedAt: now };
+    const archetype = normalizeArchetype(input.archetype);
+    const template = templateFor(archetype, input.title, input.prompt);
+    const meta: SiteMeta = { siteId, title: input.title, createdAt: now, updatedAt: now, archetype };
     await writeFile(
       join(dir, "index.html"),
-      normalizeHtmlDocument(input.html ?? defaultHtml(input.title, input.prompt), input.title, input.prompt),
+      normalizeHtmlDocument(input.html ?? template.html, input.title, input.prompt),
       "utf8",
     );
-    await writeFile(join(dir, "styles.css"), input.css ?? defaultCss, "utf8");
-    await writeFile(join(dir, "script.js"), input.js ?? defaultJs, "utf8");
+    await writeFile(join(dir, "styles.css"), input.css ?? template.css, "utf8");
+    await writeFile(join(dir, "script.js"), input.js ?? template.js, "utf8");
     await writeFile(join(dir, ".devspace-site.json"), JSON.stringify(meta, null, 2) + "\n", "utf8");
 
     await this.git(dir, ["init"]);
@@ -396,6 +537,7 @@ export class SiteManager {
           updatedAt: details.updatedAt,
           previewUrl: details.previewUrl,
           latestVersion: details.latestVersion,
+          ...(details.archetype ? { archetype: details.archetype } : {}),
         });
       } catch {
         // Ignore partial folders so one bad preview does not hide the rest.

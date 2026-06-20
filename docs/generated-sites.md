@@ -60,6 +60,22 @@ git show HEAD:index.html
 | `list_sites` | Lists generated sites and their preview URLs. |
 | `get_site_versions` | Shows recent git commit history for one site. |
 
+## Archetypes
+
+`create_site` accepts an optional `archetype`. Prefer an archetype plus a clear
+prompt over raw `html`/`css` when you want a faster, more consistent first pass.
+
+| Archetype | Best for |
+|---|---|
+| `b2b-saas-quiet` | Restrained B2B or product landing pages. |
+| `internal-dashboard` | Dense operational tools, admin consoles, and internal workflows. |
+| `product-docs` | Documentation, API guides, setup pages, and onboarding references. |
+| `editorial-product` | Product storytelling, launch pages, and narrative feature pages. |
+
+When `html`, `css`, or `js` are omitted, DevSpace writes starter files from the
+selected archetype. Supplying any of those fields overrides that file while still
+keeping the site versioned and previewable.
+
 ## HTML safety
 
 Model-generated HTML is normalized before writing. If a model returns a partial

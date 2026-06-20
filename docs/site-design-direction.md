@@ -44,9 +44,25 @@ Avoid these unless the user explicitly asks for them:
 - Layout: use full-width sections with constrained inner content. Use cards only
   for repeated items or framed tools.
 
+## Built-in Archetypes
+
+`create_site` includes starter archetypes so ChatGPT can choose a constrained
+layout before writing custom markup:
+
+```text
+b2b-saas-quiet
+internal-dashboard
+product-docs
+editorial-product
+```
+
+These are intentionally plain HTML/CSS templates. The goal is to make the first
+preview specific and editable, not to hide everything behind a complex generator.
+
 ## Next Steps
 
-The next improvement should be template-driven generation:
+The next improvement should be to externalize the built-in archetypes into
+editable template files and shared tokens:
 
 ```text
 templates/
@@ -57,5 +73,5 @@ templates/
 tokens.json
 ```
 
-`create_site` should eventually choose a template by archetype, then edit the
-content and local layout instead of inventing every page from scratch.
+After that, add a small design review pass that scores generated pages against
+the anti-pattern list before returning the preview.
