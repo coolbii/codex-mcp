@@ -132,6 +132,7 @@ ChatGPT instead of Codex.
 | `write_file` / `edit_file` | ✗ | Create/overwrite, or exact-string edit — prompts |
 | `create_site` / `update_site` | ✗ | Create or update a versioned static website preview |
 | `list_sites` / `get_site_versions` | ✓ | Inspect generated site previews and their git history |
+| `install_packages` | ✗ | Optional. Enabled only with `ENABLE_PACKAGE_INSTALL=1`; installs registry packages with install scripts disabled. |
 
 Generated site previews are written under
 `<first ALLOWED_ROOTS>/devspace-sites/<siteId>/` and served at
@@ -144,6 +145,9 @@ Generated site previews are written under
   whole project root. ChatGPT (and any prompt-injection in files it reads) can
   only reach that scope. devspace refuses dangerous roots outright.
 - **Shell stays off** by default — keep it that way for a ChatGPT-facing server.
+- **Package install is opt-in** — enable `ENABLE_PACKAGE_INSTALL=1` only when
+  React/Next/Nx generation needs dependencies. It is not a generic shell; it
+  only accepts package-name arrays and disables install scripts by default.
 - Treat `OWNER_TOKEN` and `data/devspace-oauth.json` as secrets (the latter is
   git-ignored).
 

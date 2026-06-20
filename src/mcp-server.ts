@@ -21,6 +21,7 @@ import { readFile, listDirectory } from "./fs-tools.js";
 import { findFiles, searchFiles } from "./search-tools.js";
 import { writeFile, editFile, showDiff } from "./edit-tools.js";
 import { runCommand } from "./shell-tools.js";
+import { installPackages } from "./package-tools.js";
 import { audit } from "./audit-log.js";
 import { SiteManager, SITE_ARCHETYPES } from "./site-tools.js";
 
@@ -701,6 +702,64 @@ export function buildMcpServer(
   );
 
   // --- shell (opt-in) ------------------------------------------------------
+
+  if (config.enablePackageInstall) {
+    server.registerTool(
+      "install_packages",
+      {
+        title: "Install packages",
+        description:
+          "Install npm packages in an opened workspace using npm, pnpm, yarn, or bun. " +
+          "This is opt-in server-side and disables install scripts by default.",
+        inputSchema: {
+          workspaceId: z.string(),
+          path: z.string().optional().describe("Workspace-relative package directory. Defaults to the workspace root."),
+          packages: z
+            .array(z.string())
+            .min(1)
+            .max(30)
+            .describe("npm package specs only, e.g. react, @scope/pkg, react@latest, react@18.2.0."),
+          devDependency: z.boolean().optional().describe("Install as a devDependency."),
+          packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]).optional().describe("Override auto-detection."),
+        },
+        outputSchema: {
+          packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]),
+          args: z.array(z.string()),
+          packages: z.array(z.string()),
+          cwd: z.string(),
+          exitCode: z.number().int().nullable(),
+          timedOut: z.boolean(),
+          truncated: z.boolean(),
+        },
+        annotations: { ...WRITE, title: "Install packages" },
+      },
+      async ({ workspaceId, path, packages, devDependency, packageManager }) =>
+        invoke("install_packages", { workspaceId, path: path ?? "." }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await installPackages(config, guard, ws, {
+            ...(path !== undefined ? { path } : {}),
+            packages,
+            ...(devDependency !== undefined ? { devDependency } : {}),
+            ...(packageManager !== undefined ? { packageManager } : {}),
+          });
+          const status =
+            r.timedOut ? "TIMED OUT" : r.signal ? `killed (${r.signal})` : `exit ${r.exitCode}`;
+          const body =
+            `$ ${r.packageManager} ${r.args.join(" ")}\n[${status}${r.truncated ? ", output truncated" : ""}, ${r.durationMs}ms]\n` +
+            (r.stdout ? `\n--- stdout ---\n${r.stdout}` : "") +
+            (r.stderr ? `\n--- stderr ---\n${r.stderr}` : "");
+          return text(body, {
+            packageManager: r.packageManager,
+            args: r.args,
+            packages: r.packages,
+            cwd: r.cwd,
+            exitCode: r.exitCode,
+            timedOut: r.timedOut,
+            truncated: r.truncated,
+          });
+        }),
+    );
+  }
 
   if (config.enableShell) {
     server.registerTool(

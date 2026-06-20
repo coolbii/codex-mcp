@@ -69,6 +69,8 @@ export interface AppConfig {
   enableShell: boolean;
   shellMode: ShellMode;
   logShellCommands: boolean;
+  /** Package installation is a separate opt-in capability from shell. */
+  enablePackageInstall: boolean;
 
   /** Resource caps. */
   maxReadBytes: number;
@@ -404,6 +406,13 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
         "it is treated as giving the client your local user account.",
     );
   }
+  const enablePackageInstall = bool(env.ENABLE_PACKAGE_INSTALL, false);
+  if (enablePackageInstall) {
+    warn(
+      "Package install tool ENABLED. Installs can fetch third-party code and mutate lockfiles; " +
+        "install scripts are disabled by default by the tool.",
+    );
+  }
 
   const config: AppConfig = {
     host,
@@ -422,6 +431,7 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
     enableShell,
     shellMode,
     logShellCommands: bool(env.LOG_SHELL_COMMANDS, false),
+    enablePackageInstall,
     maxReadBytes: int(env.MAX_READ_BYTES, 2_000_000, "MAX_READ_BYTES"),
     maxSearchMatches: int(env.MAX_SEARCH_MATCHES, 500, "MAX_SEARCH_MATCHES"),
     maxSearchFileBytes: int(env.MAX_SEARCH_FILE_BYTES, 5_000_000, "MAX_SEARCH_FILE_BYTES"),

@@ -160,6 +160,20 @@ That is why interpreters (`npm`, `node`, `python`, `make`, `sh`) are **never**
 allowlisted, and why the strong boundary for real command execution is a
 container/sandbox wrapper (Roadmap). Do not add interpreters to the allowlist.
 
+## Package installs
+
+`src/package-tools.ts`. **Disabled unless `ENABLE_PACKAGE_INSTALL=1`**. This is
+separate from shell and should stay separate: `install_packages` accepts
+structured package-name arrays, chooses `npm`/`pnpm`/`yarn`/`bun` from
+`packageManager` or lockfiles, and injects flags that disable install scripts
+(`--ignore-scripts` or Yarn's `--mode=skip-builds`). It only allows registry
+package names such as `react`, `react@latest`, or `@scope/pkg`; URLs, tarballs,
+git specs, file paths, and duplicate entries are refused.
+
+This still fetches third-party code and mutates `package.json` / lockfiles, so
+enable it only for workspaces where that is expected. It is a safer workflow
+tool, not a sandbox.
+
 ## Search / regex (ReDoS)
 
 `src/search-tools.ts`. Literal substring search is the default and is always

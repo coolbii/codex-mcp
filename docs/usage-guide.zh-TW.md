@@ -127,6 +127,7 @@ open_workspace → search_files / read_file → show_diff → edit_file
 | `write_file` / `edit_file` | ✗ | 建立/覆寫，或精準字串替換 —— 會跳確認 |
 | `create_site` / `update_site` | ✗ | 建立或更新有 git 版控的靜態網站 preview |
 | `list_sites` / `get_site_versions` | ✓ | 檢視產生出的網站 preview 與 git history |
+| `install_packages` | ✗ | 選配。只有 `ENABLE_PACKAGE_INSTALL=1` 才會開；安裝 registry 套件，預設停用 install scripts。 |
 
 網站 preview 會寫到 `<第一個 ALLOWED_ROOTS>/devspace-sites/<siteId>/`，
 並透過 `<PUBLIC_BASE_URL>/sites/<siteId>/` 提供預覽。詳細看
@@ -138,6 +139,8 @@ open_workspace → search_files / read_file → show_diff → edit_file
   任何被它讀到的檔案內容做 prompt injection）只能碰到這個範圍。設到危險路徑會被
   devspace 直接拒絕啟動。
 - **shell 預設關閉** —— 對 ChatGPT 開放的伺服器，維持關閉最安全。
+- **package install 也是選配** —— 需要 React/Next/Nx 產物時再開 `ENABLE_PACKAGE_INSTALL=1`；
+  它不是任意 shell，只接受套件名稱陣列，且預設不跑 postinstall/install scripts。
 - `OWNER_TOKEN` 和 `data/devspace-oauth.json` 當機密保管（後者已被 .gitignore）。
 
 ## 信任它之前先驗證
