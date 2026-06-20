@@ -20,9 +20,9 @@
  *     cannot tamper with client_id / redirect_uri / code_challenge.
  *   - **Opaque tokens** (not JWT) to avoid signing pitfalls. Access codes/tokens
  *     are single-purpose, short-TTL, single-use where applicable.
- *   - **Persistence**: only `clients` + `refreshTokens` hit disk (0600), so a
- *     restart doesn't force ChatGPT to re-register; access tokens/codes/pending
- *     logins are in-memory (a restart just makes ChatGPT refresh or re-login).
+ *   - **Persistence**: clients + refresh/access tokens hit disk (0600), so a
+ *     restart doesn't make ChatGPT's current bearer token immediately fail.
+ *     Auth codes and pending logins remain in-memory and short-lived.
  *   - **Owner token still works** as a bearer in oauth mode (for curl/Inspector).
  */
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -43,7 +43,7 @@ import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { AppConfig } from "./config.js";
 import { audit } from "./audit-log.js";
 
-const ACCESS_TTL_SEC = 3600;
+const ACCESS_TTL_SEC = 24 * 3600;
 const CODE_TTL_MS = 60_000;
 const TICKET_TTL_MS = 10 * 60_000;
 // Brute-force defense for the owner-password login.
@@ -77,6 +77,7 @@ interface RefreshInfo {
 interface PersistShape {
   clients: Record<string, OAuthClientInformationFull>;
   refreshTokens: Record<string, RefreshInfo>;
+  accessTokens?: Record<string, AccessInfo>;
 }
 
 function newToken(): string {
@@ -101,18 +102,17 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
   // Persisted to disk.
   private readonly clients = new Map<string, OAuthClientInformationFull>();
   private readonly refreshTokens = new Map<string, RefreshInfo>();
+  private readonly accessTokens = new Map<string, AccessInfo>(); // token -> info
   // In-memory only (safe to lose on restart).
   private readonly pending = new Map<string, AuthContext>(); // ticket -> ctx
+  private readonly completed = new Map<string, AuthContext>(); // ticket -> ctx, for duplicate form submits
   private readonly codes = new Map<string, AuthContext>(); // code -> ctx
-  private readonly accessTokens = new Map<string, AccessInfo>(); // token -> info
   private readonly loginHits = new Map<string, { count: number; resetAt: number }>(); // source -> rate window
 
   constructor(
     private readonly config: AppConfig,
     /** Canonical protected-resource URL, e.g. https://tunnel/mcp */
     private readonly resourceUrl: URL,
-    /** Issuer origin, e.g. https://tunnel */
-    private readonly issuerUrl: URL,
   ) {
     this.load();
   }
@@ -124,6 +124,10 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
       const data = JSON.parse(readFileSync(this.config.oauthStorePath, "utf8")) as PersistShape;
       for (const [id, c] of Object.entries(data.clients ?? {})) this.clients.set(id, c);
       for (const [t, r] of Object.entries(data.refreshTokens ?? {})) this.refreshTokens.set(t, r);
+      const now = Date.now();
+      for (const [t, a] of Object.entries(data.accessTokens ?? {})) {
+        if (a.expiresAt > now) this.accessTokens.set(t, a);
+      }
     } catch {
       audit({ event: "server_start", success: false, detail: "oauth store unreadable; starting empty" });
     }
@@ -133,6 +137,7 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
     const data: PersistShape = {
       clients: Object.fromEntries(this.clients),
       refreshTokens: Object.fromEntries(this.refreshTokens),
+      accessTokens: Object.fromEntries(this.accessTokens),
     };
     const dir = dirname(this.config.oauthStorePath);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -185,6 +190,11 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
     res: Response,
   ): Promise<void> {
     this.pruneExpired();
+    audit({
+      event: "auth_ok",
+      success: true,
+      detail: `oauth authorize start; redirect=${new URL(params.redirectUri).origin}${new URL(params.redirectUri).pathname}; resource=${(params.resource ?? this.resourceUrl).toString()}`,
+    });
     const ticket = newToken();
     this.pending.set(ticket, {
       clientId: client.client_id,
@@ -239,6 +249,24 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
 <p style="max-width:420px;text-align:center">${escapeHtml(msg)}</p></body>`;
   }
 
+  private redirectPage(url: string): string {
+    const safeUrl = escapeHtml(url);
+    const jsUrl = JSON.stringify(url).replace(/</g, "\\u003c");
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="0;url=${safeUrl}">
+<title>DevSpace · Redirecting</title>
+<style>
+  body{margin:0;min-height:100vh;display:grid;place-items:center;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#0e1116;color:#e6edf3}
+  main{max-width:460px;text-align:center;padding:24px}
+  a{color:#58a6ff}
+</style></head><body><main>
+<p>Returning to ChatGPT...</p>
+<p><a id="continue" href="${safeUrl}" rel="noreferrer">Continue to ChatGPT</a></p>
+<script>window.location.replace(${jsUrl});</script>
+</main></body></html>`;
+  }
+
   /** Send an auth HTML page with strict anti-clickjacking / no-cache headers. */
   private sendSecureHtml(res: Response, status: number, html: string): void {
     res.status(status);
@@ -251,6 +279,19 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
     );
     res.setHeader("Referrer-Policy", "no-referrer");
     res.send(html);
+  }
+
+  private sendRedirectHtml(res: Response, url: string): void {
+    res.status(200);
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader(
+      "Content-Security-Policy",
+      "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    );
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.send(this.redirectPage(url));
   }
 
   /** Fixed-window per-source rate limit for the login endpoint. */
@@ -290,6 +331,11 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
       const ctx = this.pending.get(ticket);
       if (!ctx || ctx.expiresAt < Date.now()) {
         this.pending.delete(ticket);
+        const completed = this.completed.get(ticket);
+        if (completed && completed.expiresAt >= Date.now() && ctEqual(password, this.config.ownerToken)) {
+          this.redirectWithCode(res, completed);
+          return;
+        }
         this.sendSecureHtml(
           res,
           400,
@@ -316,17 +362,25 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
 
       // Success → mint a single-use auth code, redirect back to ChatGPT.
       this.pending.delete(ticket);
-      const code = newToken();
-      this.codes.set(code, { ...ctx, expiresAt: Date.now() + CODE_TTL_MS });
-
-      const redirect = new URL(ctx.redirectUri);
-      redirect.searchParams.set("code", code);
-      if (ctx.state !== undefined) redirect.searchParams.set("state", ctx.state);
-      redirect.searchParams.set("iss", this.issuerUrl.origin);
-      audit({ event: "auth_ok", success: true, detail: "oauth login ok" });
-      res.redirect(302, redirect.toString());
+      this.completed.set(ticket, { ...ctx, expiresAt: Date.now() + CODE_TTL_MS });
+      this.redirectWithCode(res, ctx);
     });
     return r;
+  }
+
+  private redirectWithCode(res: Response, ctx: AuthContext): void {
+    const code = newToken();
+    this.codes.set(code, { ...ctx, expiresAt: Date.now() + CODE_TTL_MS });
+
+    const redirect = new URL(ctx.redirectUri);
+    redirect.searchParams.set("code", code);
+    if (ctx.state !== undefined) redirect.searchParams.set("state", ctx.state);
+    audit({
+      event: "auth_ok",
+      success: true,
+      detail: `oauth login ok; redirect=${redirect.origin}${redirect.pathname}; params=${[...redirect.searchParams.keys()].join(",")}`,
+    });
+    this.sendRedirectHtml(res, redirect.toString());
   }
 
   // --------------------------------------------------------------- PKCE + code
@@ -350,12 +404,15 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
     const ctx = this.codes.get(authorizationCode);
     if (!ctx || ctx.clientId !== client.client_id || ctx.expiresAt < Date.now()) {
       this.codes.delete(authorizationCode);
+      audit({ event: "auth_fail", success: false, detail: "oauth token: invalid authorization code" });
       throw new Error("invalid_grant");
     }
     if (redirectUri !== undefined && redirectUri !== ctx.redirectUri) {
+      audit({ event: "auth_fail", success: false, detail: "oauth token: redirect_uri mismatch" });
       throw new Error("invalid_grant");
     }
     this.codes.delete(authorizationCode); // single use
+    audit({ event: "auth_ok", success: true, detail: "oauth token exchange ok" });
     return this.issueTokens(ctx.clientId, ctx.scopes, ctx.resource);
   }
 
@@ -366,16 +423,10 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
   ): Promise<OAuthTokens> {
     const info = this.refreshTokens.get(refreshToken);
     if (!info || info.clientId !== client.client_id) {
+      audit({ event: "auth_fail", success: false, detail: "oauth refresh: invalid refresh token" });
       throw new Error("invalid_grant");
     }
     const granted = scopes && scopes.length ? scopes.filter((s) => info.scopes.includes(s)) : info.scopes;
-
-    // Rotate the refresh token: a leaked/old refresh token stops working once
-    // the legitimate client next refreshes (OAuth 2.1 guidance for public clients).
-    this.refreshTokens.delete(refreshToken);
-    const newRefresh = newToken();
-    this.refreshTokens.set(newRefresh, { clientId: info.clientId, scopes: info.scopes, resource: info.resource });
-    this.persist();
 
     const access = newToken();
     this.accessTokens.set(access, {
@@ -384,12 +435,14 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
       resource: info.resource,
       expiresAt: Date.now() + ACCESS_TTL_SEC * 1000,
     });
+    this.persist();
+    audit({ event: "auth_ok", success: true, detail: "oauth refresh ok" });
     return {
       access_token: access,
       token_type: "Bearer",
       expires_in: ACCESS_TTL_SEC,
       scope: granted.join(" "),
-      refresh_token: newRefresh,
+      refresh_token: refreshToken,
     };
   }
 
@@ -428,8 +481,15 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
     const info = this.accessTokens.get(accessToken);
     if (!info || info.expiresAt < Date.now()) {
       this.accessTokens.delete(accessToken);
+      if (info) this.persist();
+      audit({
+        event: "auth_fail",
+        success: false,
+        detail: info ? "oauth access: expired token" : "oauth access: unknown token",
+      });
       throw new Error("invalid_token");
     }
+    audit({ event: "auth_ok", success: true, detail: "oauth access token ok" });
     return {
       token: accessToken,
       clientId: info.clientId,
@@ -443,15 +503,24 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
     _client: OAuthClientInformationFull,
     request: OAuthTokenRevocationRequest,
   ): Promise<void> {
-    this.accessTokens.delete(request.token);
-    if (this.refreshTokens.delete(request.token)) this.persist();
+    const accessDeleted = this.accessTokens.delete(request.token);
+    const refreshDeleted = this.refreshTokens.delete(request.token);
+    if (accessDeleted || refreshDeleted) this.persist();
   }
 
   private pruneExpired(): void {
     const now = Date.now();
     for (const [k, v] of this.pending) if (v.expiresAt < now) this.pending.delete(k);
+    for (const [k, v] of this.completed) if (v.expiresAt < now) this.completed.delete(k);
     for (const [k, v] of this.codes) if (v.expiresAt < now) this.codes.delete(k);
-    for (const [k, v] of this.accessTokens) if (v.expiresAt < now) this.accessTokens.delete(k);
+    let prunedAccess = false;
+    for (const [k, v] of this.accessTokens) {
+      if (v.expiresAt < now) {
+        this.accessTokens.delete(k);
+        prunedAccess = true;
+      }
+    }
+    if (prunedAccess) this.persist();
     for (const [k, v] of this.loginHits) if (v.resetAt < now) this.loginHits.delete(k);
   }
 }

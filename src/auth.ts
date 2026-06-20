@@ -57,7 +57,7 @@ export function buildAuth(config: AppConfig): AuthBundle {
 
   // -------- AUTH_MODE=oauth : embedded OAuth 2.1 AS (for ChatGPT) --------
   if (config.authMode === "oauth") {
-    const provider = new DevspaceOAuthProvider(config, resourceUrl, issuerUrl);
+    const provider = new DevspaceOAuthProvider(config, resourceUrl);
     const oauthRouter = mcpAuthRouter({
       provider,
       issuerUrl,

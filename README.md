@@ -61,7 +61,7 @@ cp .env.example .env     # then edit ALLOWED_ROOTS (and OWNER_TOKEN for HTTP)
 Run the tests and smoke checks any time:
 
 ```bash
-npm test                 # 64 unit tests (path-guard, config, edit, search, shell…)
+npm test                 # unit tests (path-guard, config, edit, search, shell, OAuth…)
 node scripts/smoke-stdio.mjs   # end-to-end over stdio with the real MCP client
 ```
 
@@ -161,10 +161,16 @@ locally first with `node scripts/smoke-oauth.mjs`.
 | `show_diff` | ✓ | Preview the diff a write would make — no disk change. |
 | `write_file` | ✗ | Create/overwrite a file (atomic); returns a diff. |
 | `edit_file` | ✗ | Exact `oldText`→`newText` replacement(s); returns a diff. |
+| `create_site` | ✗ | Create a versioned static website preview under `devspace-sites`. |
+| `update_site` | ✗ | Update a generated site and commit a new version. |
+| `list_sites` / `get_site_versions` | ✓ | Inspect generated sites and git history. |
 | `run_command` | ✗ | **Only if `ENABLE_SHELL=1`.** Allowlisted, no-shell command. |
 
 Every call (except `list_roots`/`open_workspace`/`list_workspaces`) takes the
 `workspaceId` from `open_workspace`.
+
+Generated site previews are documented in
+[docs/generated-sites.md](docs/generated-sites.md).
 
 ## Roadmap
 
@@ -186,6 +192,7 @@ src/
   fs-tools.ts          read_file, list_directory
   search-tools.ts      find_files, search_files
   edit-tools.ts        write_file, edit_file, show_diff
+  site-tools.ts        generated static site previews + per-site git history
   shell-tools.ts       run_command (disabled by default)
   host-origin-guard.ts edge DNS-rebinding / origin guard
   auth.ts              auth mode switch (owner-token / oauth)

@@ -22,13 +22,20 @@ import { buildMcpServer } from "./mcp-server.js";
 import { buildAuth } from "./auth.js";
 import { hostOriginGuard } from "./host-origin-guard.js";
 import { audit } from "./audit-log.js";
+import { WorkspaceRegistry } from "./workspaces.js";
+import { SiteManager } from "./site-tools.js";
 
 export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
   const app = express();
   app.disable("x-powered-by");
+  // cloudflared forwards requests from loopback and sets X-Forwarded-For.
+  // Trust only loopback proxies so SDK rate-limiters can identify clients
+  // without accepting spoofed forwarded headers from arbitrary networks.
+  app.set("trust proxy", "loopback");
   app.use(express.json({ limit: "8mb" }));
 
   const auth = buildAuth(config);
+  const siteManager = new SiteManager(config, guard);
 
   // Health check — unauthenticated, no sensitive info.
   app.get("/healthz", (_req: Request, res: Response) => {
@@ -40,11 +47,32 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
     app.use(auth.router);
   }
 
+  app.get(/^\/sites\/([^/]+)(?:\/(.*))?$/, async (req: Request, res: Response) => {
+    try {
+      const siteIdParam = req.params[0];
+      const siteId = Array.isArray(siteIdParam) ? siteIdParam[0] : siteIdParam;
+      if (!siteId) throw new Error("Missing site id");
+      const pathParam = req.params[1];
+      const path = Array.isArray(pathParam) ? pathParam.join("/") : (pathParam ?? "");
+      const version = typeof req.query.version === "string" ? req.query.version : undefined;
+      const file = await siteManager.previewFile(siteId, path, version);
+      res.type(file.contentType);
+      res.setHeader("Cache-Control", version ? "public, max-age=31536000, immutable" : "no-store");
+      res.sendFile(file.absolutePath);
+    } catch (err) {
+      const e = err as Error;
+      res.status(404).type("text/plain").send(e.message);
+    }
+  });
+
   // Edge Host/Origin guard for the MCP endpoint.
   app.use("/mcp", hostOriginGuard(config.allowedHosts, config.allowedOrigins));
 
   // One transport per session.
   const transports: Record<string, StreamableHTTPServerTransport> = {};
+  // Shared across HTTP transport sessions. ChatGPT may open a workspace in one
+  // session and invoke follow-up tools in another while reusing workspaceId.
+  const registry = new WorkspaceRegistry(guard, config.allowedRoots);
 
   app.post("/mcp", auth.requireAuth, async (req: Request, res: Response) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
@@ -70,7 +98,7 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
           audit({ event: "session_close", workspaceId: sid, success: true });
         }
       };
-      const server = buildMcpServer(config, guard);
+      const server = buildMcpServer(config, guard, registry);
       await server.connect(transport);
     } else {
       res.status(400).json({

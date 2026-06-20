@@ -80,6 +80,50 @@ async function register(name: string): Promise<Record<string, any>> {
   return r.json() as Promise<Record<string, any>>;
 }
 
+async function mcpRequest(body: Record<string, any>, sessionId?: string): Promise<Response> {
+  return fetch(`${origin}/mcp`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json, text/event-stream",
+      authorization: `Bearer ${OWNER}`,
+      ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function parseSseJson(text: string): Record<string, any> {
+  const data = text
+    .split("\n")
+    .find((line) => line.startsWith("data: "))
+    ?.slice("data: ".length);
+  if (!data) throw new Error(`No SSE data line: ${text}`);
+  return JSON.parse(data) as Record<string, any>;
+}
+
+async function initializeMcpSession(): Promise<string> {
+  const r = await mcpRequest(JSON.parse(INIT));
+  expect(r.status).toBe(200);
+  const sid = r.headers.get("mcp-session-id");
+  if (!sid) throw new Error("No mcp-session-id");
+  return sid;
+}
+
+async function callTool(
+  sessionId: string,
+  id: number,
+  name: string,
+  args: Record<string, any>,
+): Promise<Record<string, any>> {
+  const r = await mcpRequest(
+    { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } },
+    sessionId,
+  );
+  expect(r.status).toBe(200);
+  return parseSseJson(await r.text());
+}
+
 /** Drive /authorize → login → returns the auth code. */
 async function getCode(clientId: string, challenge: string): Promise<string> {
   const as = await asMetadata();
@@ -102,8 +146,11 @@ async function getCode(clientId: string, challenge: string): Promise<string> {
     body: new URLSearchParams({ ticket, password: OWNER }).toString(),
     redirect: "manual",
   });
-  if (login.status !== 302) throw new Error(`login status ${login.status}`);
-  const code = new URL(login.headers.get("location")!).searchParams.get("code");
+  if (login.status !== 200) throw new Error(`login status ${login.status}`);
+  const loginHtml = await login.text();
+  const redirectUrl = loginHtml.match(/id="continue" href="([^"]+)"/)?.[1]?.replace(/&amp;/g, "&");
+  if (!redirectUrl) throw new Error("no redirect url");
+  const code = new URL(redirectUrl).searchParams.get("code");
   if (!code) throw new Error("no code");
   return code;
 }
@@ -135,6 +182,18 @@ it("owner token still works as a bearer in oauth mode", async () => {
     body: INIT,
   });
   expect(r.status).toBe(200);
+});
+
+it("keeps workspace handles usable across HTTP transport sessions", async () => {
+  const sessionA = await initializeMcpSession();
+  const opened = await callTool(sessionA, 2, "open_workspace", { path: root });
+  const workspaceId = opened.result?.structuredContent?.workspaceId;
+  expect(workspaceId).toBeTruthy();
+
+  const sessionB = await initializeMcpSession();
+  const listed = await callTool(sessionB, 3, "list_directory", { workspaceId });
+  expect(listed.result?.isError).not.toBe(true);
+  expect(listed.result?.structuredContent?.path).toBe(".");
 });
 
 it("completes the full DCR → PKCE → token → authed /mcp flow", async () => {
@@ -219,8 +278,8 @@ it("rejects an auth code replay (single use)", async () => {
   expect(second.ok).toBe(false);
 });
 
-it("rotates the refresh token (the old one stops working)", async () => {
-  const client = await register("rotate");
+it("keeps refresh tokens stable for ChatGPT retries", async () => {
+  const client = await register("stable-refresh");
   const verifier = b64url(randomBytes(32));
   const challenge = b64url(createHash("sha256").update(verifier).digest());
   const code = await getCode(client.client_id, challenge);
@@ -237,16 +296,15 @@ it("rotates the refresh token (the old one stops working)", async () => {
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tok.refresh_token, client_id: client.client_id }).toString(),
   });
-  const rotated = (await r1.json()) as Record<string, any>;
-  expect(rotated.refresh_token).toBeTruthy();
-  expect(rotated.refresh_token).not.toBe(tok.refresh_token); // rotated
-  // the ORIGINAL refresh token must no longer work
+  const refreshed = (await r1.json()) as Record<string, any>;
+  expect(refreshed.access_token).toBeTruthy();
+  expect(refreshed.refresh_token).toBe(tok.refresh_token);
   const reuse = await fetch(as.token_endpoint, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tok.refresh_token, client_id: client.client_id }).toString(),
   });
-  expect(reuse.ok).toBe(false);
+  expect(reuse.ok).toBe(true);
 });
 
 it("burns the login ticket after repeated wrong passwords", async () => {

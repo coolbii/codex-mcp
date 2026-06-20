@@ -125,6 +125,12 @@ open_workspace → search_files / read_file → show_diff → edit_file
 | `read_file` | ✓ | 讀檔（可指定行範圍） |
 | `show_diff` | ✓ | 預覽變更但不寫入 |
 | `write_file` / `edit_file` | ✗ | 建立/覆寫，或精準字串替換 —— 會跳確認 |
+| `create_site` / `update_site` | ✗ | 建立或更新有 git 版控的靜態網站 preview |
+| `list_sites` / `get_site_versions` | ✓ | 檢視產生出的網站 preview 與 git history |
+
+網站 preview 會寫到 `<第一個 ALLOWED_ROOTS>/devspace-sites/<siteId>/`，
+並透過 `<PUBLIC_BASE_URL>/sites/<siteId>/` 提供預覽。詳細看
+[generated-sites.md](generated-sites.md)。
 
 ## 安全提醒
 

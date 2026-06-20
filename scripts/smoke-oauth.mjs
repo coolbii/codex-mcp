@@ -132,15 +132,18 @@ try {
   assert(badLogin.status === 401, `wrong password should 401, got ${badLogin.status}`);
   console.log("wrong password → 401 ✓");
 
-  // 4) correct password → 302 with code
+  // 4) correct password → redirect page with code
   const login = await fetch(`${ORIGIN}/oauth/login`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({ ticket, password: OWNER }).toString(),
     redirect: "manual",
   });
-  assert(login.status === 302, `login should 302, got ${login.status}`);
-  const loc = new URL(login.headers.get("location"));
+  assert(login.status === 200, `login should 200, got ${login.status}`);
+  const loginHtml = await login.text();
+  const redirectUrl = loginHtml.match(/id="continue" href="([^"]+)"/)?.[1]?.replace(/&amp;/g, "&");
+  assert(redirectUrl, "no redirect url in login response");
+  const loc = new URL(redirectUrl);
   const code = loc.searchParams.get("code");
   assert(code, "no code in redirect");
   assert(loc.searchParams.get("state") === "xyz", "state not echoed");

@@ -1,9 +1,10 @@
 /**
  * mcp-server.ts — wire the pure primitives to MCP tools.
  *
- * One McpServer is built per session (HTTP) or once (stdio). Each gets its own
- * WorkspaceRegistry so sessions cannot see each other's open workspaces. The
- * PathGuard and AppConfig are shared (immutable).
+ * One McpServer is built per session (HTTP) or once (stdio). HTTP may pass a
+ * shared WorkspaceRegistry because some clients issue tool calls across
+ * multiple MCP transport sessions while expecting workspace handles to remain
+ * valid. The PathGuard and AppConfig are shared (immutable).
  *
  * Tool annotations matter: `readOnlyHint: true` lets clients (notably ChatGPT)
  * run a tool without a per-call approval prompt; write/exec tools set
@@ -21,9 +22,44 @@ import { findFiles, searchFiles } from "./search-tools.js";
 import { writeFile, editFile, showDiff } from "./edit-tools.js";
 import { runCommand } from "./shell-tools.js";
 import { audit } from "./audit-log.js";
+import { SiteManager } from "./site-tools.js";
 
 const SERVER_NAME = "devspace";
 const SERVER_VERSION = "0.1.0";
+const SITE_WIDGET_URI = "ui://devspace/site-preview.v3.html";
+const SITE_WIDGET_URI_ALIASES = [
+  SITE_WIDGET_URI,
+  "ui://devspace/site-preview.v2.html",
+  "ui://devspace/site-preview.html",
+] as const;
+const SITE_WIDGET_MIME = "text/html;profile=mcp-app";
+
+const entrySchema = z.object({
+  name: z.string(),
+  type: z.enum(["file", "directory", "symlink", "other"]),
+});
+const matchSchema = z.object({
+  file: z.string(),
+  lineNumber: z.number().int().positive(),
+  line: z.string(),
+});
+const siteVersionSchema = z.object({
+  version: z.string(),
+  message: z.string(),
+  createdAt: z.string(),
+});
+const siteSummarySchema = z.object({
+  siteId: z.string(),
+  title: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  previewUrl: z.string(),
+  latestVersion: z.string().nullable(),
+});
+const siteDetailsSchema = siteSummarySchema.extend({
+  localPath: z.string(),
+  versions: z.array(siteVersionSchema),
+});
 
 function text(s: string, structured?: Record<string, unknown>): CallToolResult {
   return {
@@ -36,7 +72,112 @@ function errorResult(message: string): CallToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
-export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
+function sitePreviewResult(message: string, structured: Record<string, unknown>): CallToolResult {
+  return {
+    content: [{ type: "text", text: message }],
+    structuredContent: structured,
+    _meta: {
+      "openai/outputTemplate": SITE_WIDGET_URI,
+      "openai/toolInvocation/invoking": "Rendering preview",
+      "openai/toolInvocation/invoked": "Preview ready",
+    },
+  };
+}
+
+function siteWidgetHtml(): string {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DevSpace Preview</title>
+    <style>
+      :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #0f1115; color: #eef1f5; }
+      .bar { min-height: 48px; display: flex; align-items: center; gap: 12px; padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,.12); background: #151922; }
+      .title { min-width: 0; flex: 1; }
+      .title strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+      .title span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9aa4b2; font-size: 12px; }
+      a, button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #202633; color: #eef1f5; padding: 7px 10px; font: inherit; font-size: 13px; text-decoration: none; cursor: pointer; }
+      iframe { display: block; width: 100%; height: calc(100vh - 49px); border: 0; background: white; }
+      .empty { display: grid; min-height: 220px; place-items: center; color: #9aa4b2; padding: 24px; text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div id="app" class="empty">Waiting for a DevSpace preview...</div>
+    <script>
+      let latestOutput = null;
+      function structuredFromEnvelope(envelope) {
+        if (!envelope || typeof envelope !== "object") return null;
+        if (envelope.structuredContent) return envelope.structuredContent;
+        if (envelope.result?.structuredContent) return envelope.result.structuredContent;
+        if (envelope.call_tool_result?.structuredContent) return envelope.call_tool_result.structuredContent;
+        if (envelope.mcp_tool_result?.structuredContent) return envelope.mcp_tool_result.structuredContent;
+        if (envelope.mcp_tool_result?.result?.structuredContent) return envelope.mcp_tool_result.result.structuredContent;
+        return null;
+      }
+      function getOutput() {
+        return latestOutput ||
+          window.openai?.toolOutput ||
+          structuredFromEnvelope(window.openai?.toolResponseMetadata) ||
+          {};
+      }
+      function render() {
+        const data = getOutput();
+        const previewUrl = data.previewUrl;
+        const siteId = data.siteId || "";
+        const title = data.title || "DevSpace preview";
+        const version = data.latestVersion || "";
+        const app = document.getElementById("app");
+        if (!previewUrl) {
+          app.className = "empty";
+          app.textContent = "No preview URL returned.";
+          return;
+        }
+        app.className = "";
+        app.innerHTML = '<div class="bar"><div class="title"><strong></strong><span></span></div><button type="button" id="refresh">Refresh</button><a id="open" target="_blank" rel="noreferrer">Open</a></div><iframe sandbox="allow-scripts allow-forms allow-popups allow-modals allow-same-origin"></iframe>';
+        app.querySelector("strong").textContent = title;
+        app.querySelector("span").textContent = siteId + (version ? " · " + version.slice(0, 7) : "");
+        app.querySelector("iframe").src = previewUrl;
+        app.querySelector("#open").href = previewUrl;
+        app.querySelector("#refresh").addEventListener("click", () => {
+          const frame = app.querySelector("iframe");
+          frame.src = previewUrl + (previewUrl.includes("?") ? "&" : "?") + "t=" + Date.now();
+        });
+      }
+      render();
+      setTimeout(render, 100);
+      setTimeout(render, 500);
+      setTimeout(render, 1500);
+      window.addEventListener("message", (event) => {
+        const message = typeof event.data === "string" ? (() => {
+          try { return JSON.parse(event.data); } catch { return null; }
+        })() : event.data;
+        if (!message || typeof message !== "object") return;
+        if (message.method === "ui/notifications/tool-result") {
+          latestOutput = structuredFromEnvelope(message.params) || message.params?.structuredContent || null;
+          render();
+          return;
+        }
+        if (message.method === "ui/notifications/tool-input") return;
+        render();
+      });
+      window.addEventListener("openai:set_globals", (event) => {
+        const globals = event.detail?.globals || {};
+        if (globals.toolOutput !== undefined) latestOutput = globals.toolOutput;
+        render();
+      });
+    </script>
+  </body>
+</html>`;
+}
+
+export function buildMcpServer(
+  config: AppConfig,
+  guard: PathGuard,
+  registry = new WorkspaceRegistry(guard, config.allowedRoots),
+): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
@@ -50,9 +191,6 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
         "(exact oldText→newText replacement). All paths are workspace-relative.",
     },
   );
-
-  // Per-session registry.
-  const registry = new WorkspaceRegistry(guard, config.allowedRoots);
 
   /** Shared invoke wrapper: time, audit, and convert thrown errors to results. */
   async function invoke(
@@ -89,6 +227,43 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
 
   const RO = { readOnlyHint: true, openWorldHint: false } as const;
   const WRITE = { readOnlyHint: false, destructiveHint: true, openWorldHint: false } as const;
+  const siteManager = new SiteManager(config, guard);
+  const widgetOrigin = config.publicBaseUrl ?? `http://${config.host}:${config.port}`;
+  const widgetMeta = {
+    "openai/widgetDescription": "Interactive preview for locally generated DevSpace sites.",
+    "openai/widgetPrefersBorder": true,
+    ui: {
+      prefersBorder: true,
+      csp: {
+        connectDomains: [widgetOrigin],
+        resourceDomains: [widgetOrigin],
+        frameDomains: [widgetOrigin],
+      },
+    },
+  };
+
+  for (const [index, uri] of SITE_WIDGET_URI_ALIASES.entries()) {
+    server.registerResource(
+      index === 0 ? "site-preview-widget" : `site-preview-widget-compat-${index}`,
+      uri,
+      {
+        title: "DevSpace Site Preview",
+        mimeType: SITE_WIDGET_MIME,
+        description: "Renders a generated DevSpace site preview inside ChatGPT.",
+        _meta: widgetMeta,
+      },
+      async () => ({
+        contents: [
+          {
+            uri,
+            mimeType: SITE_WIDGET_MIME,
+            text: siteWidgetHtml(),
+            _meta: widgetMeta,
+          },
+        ],
+      }),
+    );
+  }
 
   // --- discovery -----------------------------------------------------------
 
@@ -98,6 +273,7 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
       title: "List allowed roots",
       description: "List the directories this server is permitted to open.",
       inputSchema: {},
+      outputSchema: { roots: z.array(z.string()) },
       annotations: { ...RO, title: "List allowed roots" },
     },
     async () =>
@@ -117,6 +293,7 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
       description:
         "Open a directory (an allowed root, or a folder beneath one) and get a workspaceId to use for all later calls.",
       inputSchema: { path: z.string().describe("absolute path, or path relative to an allowed root") },
+      outputSchema: { workspaceId: z.string(), root: z.string() },
       annotations: { ...RO, title: "Open workspace" },
     },
     async ({ path }) =>
@@ -135,6 +312,9 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
       title: "List open workspaces",
       description: "List workspaces opened in this session.",
       inputSchema: {},
+      outputSchema: {
+        workspaces: z.array(z.object({ workspaceId: z.string(), root: z.string() })),
+      },
       annotations: { ...RO, title: "List open workspaces" },
     },
     async () =>
@@ -159,6 +339,11 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
         path: z.string().describe("workspace-relative file path"),
         offset: z.number().int().positive().optional().describe("1-based start line"),
         limit: z.number().int().positive().optional().describe("max lines to return"),
+      },
+      outputSchema: {
+        path: z.string(),
+        bytes: z.number().int().nonnegative(),
+        truncated: z.boolean(),
       },
       annotations: { ...RO, title: "Read file" },
     },
@@ -191,6 +376,11 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
         workspaceId: z.string(),
         path: z.string().optional().describe("workspace-relative dir (default: root)"),
       },
+      outputSchema: {
+        path: z.string(),
+        entries: z.array(entrySchema),
+        truncated: z.boolean(),
+      },
       annotations: { ...RO, title: "List directory" },
     },
     async ({ workspaceId, path }) =>
@@ -221,6 +411,10 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
         maxResults: z.number().int().positive().max(2000).optional(),
         includeDotfiles: z.boolean().optional(),
         respectGitignore: z.boolean().optional(),
+      },
+      outputSchema: {
+        files: z.array(z.string()),
+        truncated: z.boolean(),
       },
       annotations: { ...RO, title: "Find files" },
     },
@@ -253,6 +447,11 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
         caseSensitive: z.boolean().optional(),
         maxResults: z.number().int().positive().max(2000).optional(),
       },
+      outputSchema: {
+        matches: z.array(matchSchema),
+        filesScanned: z.number().int().nonnegative(),
+        truncated: z.boolean(),
+      },
       annotations: { ...RO, title: "Search file contents" },
     },
     async ({ workspaceId, query, glob, isRegex, caseSensitive, maxResults }) =>
@@ -274,6 +473,123 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
       }),
   );
 
+  // --- generated sites -----------------------------------------------------
+
+  server.registerTool(
+    "create_site",
+    {
+      title: "Create preview site",
+      description:
+        "Use this when the user wants a new live website preview. Creates a local versioned static site and returns a preview URL rendered in ChatGPT.",
+      inputSchema: {
+        title: z.string().min(1).max(120),
+        prompt: z.string().min(1).max(4000).describe("User intent or design brief for this site."),
+        html: z.string().optional().describe("Full index.html. If omitted, DevSpace creates a starter page."),
+        css: z.string().optional().describe("Full styles.css. If omitted, DevSpace creates starter styles."),
+        js: z.string().optional().describe("Full script.js. If omitted, DevSpace creates a tiny starter script."),
+      },
+      outputSchema: siteDetailsSchema,
+      annotations: { ...WRITE, title: "Create preview site" },
+      _meta: {
+        "openai/outputTemplate": SITE_WIDGET_URI,
+        "openai/toolInvocation/invoking": "Creating preview site",
+        "openai/toolInvocation/invoked": "Preview site created",
+        ui: { resourceUri: SITE_WIDGET_URI },
+      },
+    },
+    async ({ title, prompt, html, css, js }) =>
+      invoke("create_site", { path: "devspace-sites" }, async () => {
+        const site = await siteManager.createSite({ title, prompt, html, css, js });
+        return sitePreviewResult(
+          `Created ${site.title}\nPreview: ${site.previewUrl}\nVersion: ${site.latestVersion}`,
+          site as unknown as Record<string, unknown>,
+        );
+      }),
+  );
+
+  server.registerTool(
+    "update_site",
+    {
+      title: "Update preview site",
+      description:
+        "Use this when the user wants changes to an existing generated site. Writes provided full files and commits a new local version.",
+      inputSchema: {
+        siteId: z.string(),
+        message: z.string().min(1).max(200).describe("Short git commit message describing the change."),
+        title: z.string().min(1).max(120).optional(),
+        html: z.string().optional().describe("New full index.html. Omit to keep current file."),
+        css: z.string().optional().describe("New full styles.css. Omit to keep current file."),
+        js: z.string().optional().describe("New full script.js. Omit to keep current file."),
+      },
+      outputSchema: siteDetailsSchema,
+      annotations: { ...WRITE, title: "Update preview site" },
+      _meta: {
+        "openai/outputTemplate": SITE_WIDGET_URI,
+        "openai/toolInvocation/invoking": "Updating preview site",
+        "openai/toolInvocation/invoked": "Preview site updated",
+        ui: { resourceUri: SITE_WIDGET_URI },
+      },
+    },
+    async ({ siteId, message, title, html, css, js }) =>
+      invoke("update_site", { path: `devspace-sites/${siteId}` }, async () => {
+        const site = await siteManager.updateSite({ siteId, message, title, html, css, js });
+        return sitePreviewResult(
+          `Updated ${site.title}\nPreview: ${site.previewUrl}\nVersion: ${site.latestVersion}`,
+          site as unknown as Record<string, unknown>,
+        );
+      }),
+  );
+
+  server.registerTool(
+    "list_sites",
+    {
+      title: "List preview sites",
+      description: "Use this when the user asks which generated preview sites exist.",
+      inputSchema: {},
+      outputSchema: { sites: z.array(siteSummarySchema) },
+      annotations: { ...RO, title: "List preview sites" },
+    },
+    async () =>
+      invoke("list_sites", { path: "devspace-sites" }, async () => {
+        const sites = await siteManager.listSites();
+        const body = sites.length
+          ? sites.map((s) => `${s.siteId}  ${s.title}  ${s.previewUrl}`).join("\n")
+          : "(no generated sites)";
+        return text(body, { sites });
+      }),
+  );
+
+  server.registerTool(
+    "get_site_versions",
+    {
+      title: "Get site versions",
+      description: "Use this when the user asks for version history for a generated preview site.",
+      inputSchema: { siteId: z.string() },
+      outputSchema: {
+        siteId: z.string(),
+        title: z.string(),
+        previewUrl: z.string(),
+        latestVersion: z.string().nullable(),
+        versions: z.array(siteVersionSchema),
+      },
+      annotations: { ...RO, title: "Get site versions" },
+    },
+    async ({ siteId }) =>
+      invoke("get_site_versions", { path: `devspace-sites/${siteId}` }, async () => {
+        const site = await siteManager.getSite(siteId);
+        const body = site.versions.length
+          ? site.versions.map((v) => `${v.version.slice(0, 7)}  ${v.createdAt}  ${v.message}`).join("\n")
+          : "(no versions)";
+        return text(body, {
+          siteId: site.siteId,
+          title: site.title,
+          previewUrl: site.previewUrl,
+          latestVersion: site.latestVersion,
+          versions: site.versions,
+        });
+      }),
+  );
+
   // --- mutate --------------------------------------------------------------
 
   server.registerTool(
@@ -286,6 +602,7 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
         path: z.string(),
         content: z.string().describe("proposed new full file contents"),
       },
+      outputSchema: { path: z.string(), exists: z.boolean() },
       annotations: { ...RO, title: "Preview a write (diff)" },
     },
     async ({ workspaceId, path, content }) =>
@@ -310,6 +627,11 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
         path: z.string(),
         content: z.string(),
         createOnly: z.boolean().optional(),
+      },
+      outputSchema: {
+        path: z.string(),
+        created: z.boolean(),
+        bytes: z.number().int().nonnegative(),
       },
       annotations: { ...WRITE, title: "Write file" },
     },
@@ -342,6 +664,10 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
           .describe("ordered list of exact oldText→newText replacements"),
         replaceAll: z.boolean().optional(),
       },
+      outputSchema: {
+        path: z.string(),
+        bytes: z.number().int().nonnegative(),
+      },
       annotations: { ...WRITE, title: "Edit file" },
     },
     async ({ workspaceId, path, edits, replaceAll }) =>
@@ -367,6 +693,11 @@ export function buildMcpServer(config: AppConfig, guard: PathGuard): McpServer {
           workspaceId: z.string(),
           command: z.string().describe("bare binary name (no path), e.g. git"),
           args: z.array(z.string()).optional().describe("argument vector"),
+        },
+        outputSchema: {
+          exitCode: z.number().int().nullable(),
+          timedOut: z.boolean(),
+          truncated: z.boolean(),
         },
         annotations: { ...WRITE, title: "Run command (restricted)" },
       },

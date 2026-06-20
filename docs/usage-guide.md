@@ -130,6 +130,13 @@ ChatGPT instead of Codex.
 | `read_file` | ✓ | Read a file (optional line range) |
 | `show_diff` | ✓ | Preview a change without writing |
 | `write_file` / `edit_file` | ✗ | Create/overwrite, or exact-string edit — prompts |
+| `create_site` / `update_site` | ✗ | Create or update a versioned static website preview |
+| `list_sites` / `get_site_versions` | ✓ | Inspect generated site previews and their git history |
+
+Generated site previews are written under
+`<first ALLOWED_ROOTS>/devspace-sites/<siteId>/` and served at
+`<PUBLIC_BASE_URL>/sites/<siteId>/`. See
+[generated-sites.md](generated-sites.md).
 
 ## Security notes
 
