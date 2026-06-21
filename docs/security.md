@@ -193,6 +193,13 @@ targets. This is the safer choice for folders that contain many unrelated
 projects or a broken Nx project graph. The generated workspace still needs a
 package install before it can run.
 
+`start_app_preview` is also gated by `ENABLE_APP_SCAFFOLD=1`. It installs
+dependencies with lifecycle scripts disabled when needed, then starts the
+workspace-local Nx dev server with fixed argv and proxies it through
+`/app-previews/<previewId>/` for ChatGPT iframe rendering. Unlike static site
+previews, this runs project code in a local dev server, so enable it only for
+workspaces where running generated app code is expected.
+
 ## Search / regex (ReDoS)
 
 `src/search-tools.ts`. Literal substring search is the default and is always

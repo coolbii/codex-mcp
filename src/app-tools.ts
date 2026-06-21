@@ -215,7 +215,12 @@ function packageManagerField(parentPkg: Record<string, unknown>, packageManager:
   return undefined;
 }
 
+function exactVersion(versionSpec: string): string {
+  return versionSpec.replace(/^[~^]/, "");
+}
+
 function nextWorkspaceFiles(appName: string, parentPkg: Record<string, unknown>, packageManager: PackageManager): Record<string, string> {
+  const nxVersion = exactVersion(packageVersion(parentPkg, "nx", "19.5.0"));
   const packageJson: Record<string, unknown> = {
     name: appName,
     version: "0.0.0",
@@ -232,19 +237,19 @@ function nextWorkspaceFiles(appName: string, parentPkg: Record<string, unknown>,
       "react-dom": packageVersion(parentPkg, "react-dom", "18.3.1"),
     },
     devDependencies: {
-      "@nx/next": packageVersion(parentPkg, "@nx/next", "^19.5.0"),
-      "@nx/workspace": packageVersion(parentPkg, "@nx/workspace", "^19.5.0"),
+      "@nx/next": nxVersion,
+      "@nx/workspace": nxVersion,
       "@types/node": packageVersion(parentPkg, "@types/node", "^20.14.10"),
       "@types/react": packageVersion(parentPkg, "@types/react", "18.3.1"),
       "@types/react-dom": packageVersion(parentPkg, "@types/react-dom", "18.3.0"),
-      nx: packageVersion(parentPkg, "nx", "19.5.0"),
+      nx: nxVersion,
       typescript: packageVersion(parentPkg, "typescript", "^5.5.3"),
     },
   };
   const pmField = packageManagerField(parentPkg, packageManager);
   if (pmField) packageJson.packageManager = pmField;
 
-  return {
+  const files: Record<string, string> = {
     "package.json": JSON.stringify(packageJson, null, 2) + "\n",
     "nx.json": `${JSON.stringify({
       $schema: "./node_modules/nx/schemas/nx-schema.json",
@@ -316,6 +321,8 @@ function nextWorkspaceFiles(appName: string, parentPkg: Record<string, unknown>,
     [join("apps", appName, "src", "app", "globals.css")]:
       ":root {\n  color-scheme: light;\n  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;\n  background: #f6f7f9;\n  color: #171a1f;\n}\n\n* {\n  box-sizing: border-box;\n}\n\nbody {\n  margin: 0;\n}\n\n.shell {\n  min-height: 100vh;\n  display: grid;\n  place-items: center;\n  padding: 48px 20px;\n}\n\n.hero {\n  width: min(720px, 100%);\n}\n\n.eyebrow {\n  margin: 0 0 12px;\n  color: #476172;\n  font-size: 14px;\n  font-weight: 700;\n  text-transform: uppercase;\n}\n\nh1 {\n  margin: 0;\n  font-size: clamp(40px, 8vw, 76px);\n  line-height: 1;\n  letter-spacing: 0;\n}\n\n.lede {\n  margin: 20px 0 0;\n  max-width: 560px;\n  color: #4a5565;\n  font-size: 18px;\n  line-height: 1.6;\n}\n",
   };
+  if (packageManager === "yarn") files["yarn.lock"] = "";
+  return files;
 }
 
 async function createIsolatedApp(

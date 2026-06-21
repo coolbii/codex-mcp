@@ -132,6 +132,7 @@ open_workspace → search_files / read_file → show_diff → edit_file
 | `list_sites` / `get_site_versions` | ✓ | 檢視產生出的網站 preview 與 git history |
 | `install_packages` | ✗ | 選配。只有 `ENABLE_PACKAGE_INSTALL=1` 才會開；ChatGPT 推導 registry 套件，你審核清單，預設停用 install scripts。 |
 | `create_app` | ✗ | 選配。只有 `ENABLE_APP_SCAFFOLD=1` 才會開；預設建立隔離的 Nx + Next workspace。 |
+| `start_app_preview` | ✗ | 選配。只有 `ENABLE_APP_SCAFFOLD=1` 才會開；必要時安裝依賴、啟動 app dev server，並在 ChatGPT 顯示 preview。 |
 
 網站 preview 會寫到 `<第一個 ALLOWED_ROOTS>/devspace-sites/<siteId>/`，
 並透過 `<PUBLIC_BASE_URL>/sites/<siteId>/` 提供預覽。詳細看
@@ -153,6 +154,8 @@ open_workspace → search_files / read_file → show_diff → edit_file
   - `mode=isolated`：在已開啟的 workspace 底下寫入乾淨的 Nx + Next
     workspace template，預設位置是 `devspace-apps/<appName>`。如果 parent
     folder 混了很多無關專案，或 Nx project graph 已壞，優先用這個模式。
+  - `create_app` 之後，用 `start_app_preview` 帶入產生出的 workspace path，
+    它會必要時安裝依賴並顯示 ChatGPT iframe preview。
 - `OWNER_TOKEN` 和 `data/devspace-oauth.json` 當機密保管（後者已被 .gitignore）。
 
 ## 信任它之前先驗證

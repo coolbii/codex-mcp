@@ -103,14 +103,19 @@ it("creates an isolated Nx Next workspace without requiring a healthy root proje
   expect(r.exitCode).toBe(0);
   expect(r.workspaceRoot).toBe(join(fx.root, "devspace-apps", "scroll-trigger-demo"));
   expect(r.generatedFiles).toContain("package.json");
+  expect(r.generatedFiles).toContain("yarn.lock");
   expect(r.generatedFiles).toContain(join("apps", "scroll-trigger-demo", "src", "app", "page.tsx"));
   await expect(stat(join(r.workspaceRoot, "nx.json"))).resolves.toBeTruthy();
+  await expect(stat(join(r.workspaceRoot, "yarn.lock"))).resolves.toBeTruthy();
   const packageJson = JSON.parse(await readFile(join(r.workspaceRoot, "package.json"), "utf8")) as {
     packageManager?: string;
     dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
   };
   expect(packageJson.packageManager).toBe("yarn@4.3.1");
   expect(packageJson.dependencies?.next).toBe("14.2.35");
+  expect(packageJson.devDependencies?.nx).toBe("19.4.1");
+  expect(packageJson.devDependencies?.["@nx/next"]).toBe("19.4.1");
 });
 
 it("defaults to isolated app creation when mode is omitted", async () => {

@@ -173,6 +173,7 @@ locally first with `node scripts/smoke-oauth.mjs`.
 | `list_sites` / `get_site_versions` | ✓ | Inspect generated sites and git history. |
 | `install_packages` | ✗ | **Only if `ENABLE_PACKAGE_INSTALL=1`.** Install model-inferred registry packages with npm/pnpm/yarn/bun; install scripts disabled by default. |
 | `create_app` | ✗ | **Only if `ENABLE_APP_SCAFFOLD=1`.** Scaffold React/Next apps. Defaults to a clean isolated Nx + Next workspace (`mode=isolated`); use `mode=existing` only for a healthy existing Nx monorepo. |
+| `start_app_preview` | ✗ | **Only if `ENABLE_APP_SCAFFOLD=1`.** Install dependencies if needed, start a local Nx/Next dev server, and return a ChatGPT-rendered preview URL. |
 | `run_command` | ✗ | **Only if `ENABLE_SHELL=1`.** Allowlisted, no-shell command. |
 
 Every call (except `list_roots`/`open_workspace`/`list_workspaces`) takes the

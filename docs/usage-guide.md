@@ -137,6 +137,7 @@ ChatGPT instead of Codex.
 | `list_sites` / `get_site_versions` | ✓ | Inspect generated site previews and their git history |
 | `install_packages` | ✗ | Optional. Enabled only with `ENABLE_PACKAGE_INSTALL=1`; ChatGPT infers registry packages, you approve the list, install scripts stay disabled. |
 | `create_app` | ✗ | Optional. Enabled only with `ENABLE_APP_SCAFFOLD=1`; scaffolds React/Next apps. Defaults to an isolated Nx + Next workspace. |
+| `start_app_preview` | ✗ | Optional. Enabled only with `ENABLE_APP_SCAFFOLD=1`; installs dependencies if needed, starts the app dev server, and renders a ChatGPT preview. |
 
 Generated site previews are written under
 `<first ALLOWED_ROOTS>/devspace-sites/<siteId>/` and served at
@@ -161,6 +162,8 @@ Generated site previews are written under
   - `mode=isolated` writes a clean Nx + Next workspace template under the opened
     workspace, defaulting to `devspace-apps/<appName>`. Use this when the parent
     folder contains many unrelated projects or a broken Nx project graph.
+  - After `create_app`, call `start_app_preview` with the generated workspace
+    path to install dependencies if needed and show a ChatGPT iframe preview.
 - Treat `OWNER_TOKEN` and `data/devspace-oauth.json` as secrets (the latter is
   git-ignored).
 

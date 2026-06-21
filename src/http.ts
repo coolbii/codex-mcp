@@ -24,6 +24,7 @@ import { hostOriginGuard } from "./host-origin-guard.js";
 import { audit } from "./audit-log.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 import { SiteManager } from "./site-tools.js";
+import { AppPreviewManager } from "./app-preview-tools.js";
 
 export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
   const app = express();
@@ -36,6 +37,8 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
 
   const auth = buildAuth(config);
   const siteManager = new SiteManager(config, guard);
+  const appPreviewManager = new AppPreviewManager(config, guard);
+  app.locals.appPreviewManager = appPreviewManager;
 
   // Health check — unauthenticated, no sensitive info.
   app.get("/healthz", (_req: Request, res: Response) => {
@@ -62,6 +65,31 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
     } catch (err) {
       const e = err as Error;
       res.status(404).type("text/plain").send(e.message);
+    }
+  });
+
+  app.get(/^\/app-previews\/([^/]+)(?:\/(.*))?$/, async (req: Request, res: Response) => {
+    try {
+      const previewIdParam = req.params[0];
+      const previewId = Array.isArray(previewIdParam) ? previewIdParam[0] : previewIdParam;
+      if (!previewId) throw new Error("Missing preview id");
+      const pathParam = req.params[1];
+      const path = Array.isArray(pathParam) ? pathParam.join("/") : (pathParam ?? "");
+      await appPreviewManager.proxyPreview(previewId, req, res, path);
+    } catch (err) {
+      const e = err as Error;
+      res.status(502).type("text/plain").send(e.message);
+    }
+  });
+
+  app.get(/^\/_next\/(.*)$/, async (req: Request, res: Response) => {
+    try {
+      const pathParam = req.params[0];
+      const path = Array.isArray(pathParam) ? pathParam.join("/") : (pathParam ?? "");
+      await appPreviewManager.proxyLatestAsset(req, res, path);
+    } catch (err) {
+      const e = err as Error;
+      res.status(502).type("text/plain").send(e.message);
     }
   });
 
@@ -98,7 +126,7 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
           audit({ event: "session_close", workspaceId: sid, success: true });
         }
       };
-      const server = buildMcpServer(config, guard, registry);
+      const server = buildMcpServer(config, guard, registry, appPreviewManager);
       await server.connect(transport);
     } else {
       res.status(400).json({
@@ -130,6 +158,7 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
 export function startHttp(config: AppConfig): Promise<Server> {
   const guard = new PathGuard(config.allowedRoots);
   const app = makeApp(config, guard);
+  const appPreviewManager = app.locals.appPreviewManager as AppPreviewManager | undefined;
 
   return new Promise((resolve) => {
     const server = app.listen(config.port, config.host, () => {
@@ -156,6 +185,9 @@ export function startHttp(config: AppConfig): Promise<Server> {
       process.stderr.write("\n");
       audit({ event: "server_start", detail: where, success: true });
       resolve(server);
+    });
+    server.on("close", () => {
+      appPreviewManager?.closeAll();
     });
   });
 }

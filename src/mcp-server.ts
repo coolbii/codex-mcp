@@ -23,6 +23,7 @@ import { writeFile, editFile, showDiff } from "./edit-tools.js";
 import { runCommand } from "./shell-tools.js";
 import { installPackages } from "./package-tools.js";
 import { createApp } from "./app-tools.js";
+import { AppPreviewManager } from "./app-preview-tools.js";
 import { audit } from "./audit-log.js";
 import { SiteManager, SITE_ARCHETYPES } from "./site-tools.js";
 
@@ -70,6 +71,24 @@ const siteDetailsSchema = siteSummarySchema.extend({
   localPath: z.string(),
   versions: z.array(siteVersionSchema),
 });
+const appPreviewSchema = z.object({
+  previewId: z.string(),
+  title: z.string(),
+  previewUrl: z.string(),
+  localUrl: z.string(),
+  workspaceRoot: z.string(),
+  projectName: z.string(),
+  packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]),
+  port: z.number().int().positive(),
+  command: z.string(),
+  args: z.array(z.string()),
+  installed: z.boolean(),
+  installExitCode: z.number().int().nullable(),
+  ready: z.boolean(),
+  stdout: z.string(),
+  stderr: z.string(),
+  durationMs: z.number().int().nonnegative(),
+});
 
 function text(s: string, structured?: Record<string, unknown>): CallToolResult {
   return {
@@ -83,6 +102,18 @@ function errorResult(message: string): CallToolResult {
 }
 
 function sitePreviewResult(message: string, structured: Record<string, unknown>): CallToolResult {
+  return {
+    content: [{ type: "text", text: message }],
+    structuredContent: structured,
+    _meta: {
+      "openai/outputTemplate": SITE_WIDGET_URI,
+      "openai/toolInvocation/invoking": "Rendering preview",
+      "openai/toolInvocation/invoked": "Preview ready",
+    },
+  };
+}
+
+function previewResult(message: string, structured: Record<string, unknown>): CallToolResult {
   return {
     content: [{ type: "text", text: message }],
     structuredContent: structured,
@@ -110,8 +141,9 @@ function siteWidgetHtml(): string {
       .title strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
       .title span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #9aa4b2; font-size: 12px; }
       a, button { border: 1px solid rgba(255,255,255,.18); border-radius: 7px; background: #202633; color: #eef1f5; padding: 7px 10px; font: inherit; font-size: 13px; text-decoration: none; cursor: pointer; }
-      iframe { display: block; width: 100%; height: calc(100vh - 49px); border: 0; background: white; }
-      .empty { display: grid; min-height: 220px; place-items: center; color: #9aa4b2; padding: 24px; text-align: center; }
+      #app { min-height: 760px; }
+      iframe { display: block; width: 100%; height: 712px; min-height: 712px; border: 0; background: white; }
+      .empty { display: grid; min-height: 760px; place-items: center; color: #9aa4b2; padding: 24px; text-align: center; }
     </style>
   </head>
   <body>
@@ -177,7 +209,6 @@ function siteWidgetHtml(): string {
         const globals = event.detail?.globals || {};
         if (globals.toolOutput !== undefined) latestOutput = globals.toolOutput;
         render();
-      });
     </script>
   </body>
 </html>`;
@@ -187,6 +218,7 @@ export function buildMcpServer(
   config: AppConfig,
   guard: PathGuard,
   registry = new WorkspaceRegistry(guard, config.allowedRoots),
+  appPreviewManager = new AppPreviewManager(config, guard),
 ): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
@@ -862,6 +894,52 @@ export function buildMcpServer(
             stderr: r.stderr,
             durationMs: r.durationMs,
           });
+        }),
+    );
+
+    server.registerTool(
+      "start_app_preview",
+      {
+        title: "Start app preview",
+        description:
+          "Use this when a generated Next/Nx app should be shown in ChatGPT. " +
+          "Pass the workspace-relative or absolute path to the isolated app workspace returned by create_app. " +
+          "This installs dependencies with lifecycle scripts disabled if needed, starts the workspace-local Nx dev server, and returns a preview URL rendered in ChatGPT.",
+        inputSchema: {
+          workspaceId: z.string(),
+          path: z.string().describe("Path to the isolated app workspace containing package.json and nx.json."),
+          projectName: z.string().min(1).max(80).optional().describe("Nx project name. Defaults to package.json name."),
+          install: z.boolean().optional().describe("Whether to run dependency install before starting. Defaults to true if node_modules/.bin/nx is missing."),
+          packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]).optional().describe("Override auto-detection."),
+          timeoutMs: z.number().int().min(10_000).max(300_000).optional().describe("Install/start readiness timeout."),
+        },
+        outputSchema: appPreviewSchema,
+        annotations: { ...WRITE, title: "Start app preview" },
+        _meta: {
+          "openai/outputTemplate": SITE_WIDGET_URI,
+          "openai/toolInvocation/invoking": "Starting app preview",
+          "openai/toolInvocation/invoked": "App preview ready",
+          ui: { resourceUri: SITE_WIDGET_URI },
+        },
+      },
+      async ({ workspaceId, path, projectName, install, packageManager, timeoutMs }) =>
+        invoke("start_app_preview", { workspaceId, path }, async () => {
+          const ws = registry.get(workspaceId);
+          const preview = await appPreviewManager.start(ws, {
+            path,
+            ...(projectName !== undefined ? { projectName } : {}),
+            ...(install !== undefined ? { install } : {}),
+            ...(packageManager !== undefined ? { packageManager } : {}),
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          });
+          return previewResult(
+            `Started ${preview.projectName}\nPreview: ${preview.previewUrl}\nLocal: ${preview.localUrl}`,
+            {
+              ...preview,
+              siteId: preview.previewId,
+              latestVersion: null,
+            },
+          );
         }),
     );
   }
