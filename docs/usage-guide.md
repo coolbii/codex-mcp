@@ -136,7 +136,7 @@ ChatGPT instead of Codex.
 | `create_site` / `update_site` | ✗ | Create or update a versioned static website preview |
 | `list_sites` / `get_site_versions` | ✓ | Inspect generated site previews and their git history |
 | `install_packages` | ✗ | Optional. Enabled only with `ENABLE_PACKAGE_INSTALL=1`; ChatGPT infers registry packages, you approve the list, install scripts stay disabled. |
-| `create_app` | ✗ | Optional. Enabled only with `ENABLE_APP_SCAFFOLD=1`; scaffolds React/Next apps in an existing Nx monorepo or creates an isolated Nx + Next workspace. |
+| `create_app` | ✗ | Optional. Enabled only with `ENABLE_APP_SCAFFOLD=1`; scaffolds React/Next apps. Defaults to an isolated Nx + Next workspace. |
 
 Generated site previews are written under
 `<first ALLOWED_ROOTS>/devspace-sites/<siteId>/` and served at
@@ -155,7 +155,7 @@ Generated site previews are written under
   tool approval UI. It is not a generic shell and install scripts are disabled
   by default.
 - **Nx app scaffolding is opt-in** — enable `ENABLE_APP_SCAFFOLD=1` only for
-  trusted workspaces. `create_app` has two modes:
+  trusted workspaces. `create_app` defaults to `mode=isolated` and has two modes:
   - `mode=existing` runs `node_modules/.bin/nx` from a healthy existing Nx
     monorepo and will not download Nx through `npx` or `bunx`.
   - `mode=isolated` writes a clean Nx + Next workspace template under the opened

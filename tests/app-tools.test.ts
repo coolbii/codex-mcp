@@ -113,6 +113,20 @@ it("creates an isolated Nx Next workspace without requiring a healthy root proje
   expect(packageJson.dependencies?.next).toBe("14.2.35");
 });
 
+it("defaults to isolated app creation when mode is omitted", async () => {
+  fx = await makeFixture();
+  await writeFile(join(fx.root, "package.json"), JSON.stringify({ packageManager: "npm@10.0.0" }), "utf8");
+
+  const r = await createApp(cfg({ enableAppScaffold: true }), fx.guard, fx.ws, {
+    appName: "default-demo",
+    framework: "next",
+  });
+
+  expect(r.mode).toBe("isolated");
+  expect(r.workspaceRoot).toBe(join(fx.root, "devspace-apps", "default-demo"));
+  await expect(stat(join(r.workspaceRoot, "package.json"))).resolves.toBeTruthy();
+});
+
 it("dry-runs isolated app creation without creating folders", async () => {
   fx = await makeFixture();
   await writeFile(join(fx.root, "package.json"), JSON.stringify({ packageManager: "npm@10.0.0" }), "utf8");
@@ -138,6 +152,7 @@ it("refuses to download Nx through npx or bunx", async () => {
     createApp(cfg({ enableAppScaffold: true }), fx.guard, fx.ws, {
       appName: "admin",
       framework: "next",
+      mode: "existing",
     }),
   ).rejects.toThrow(/Local Nx binary not found/);
 });

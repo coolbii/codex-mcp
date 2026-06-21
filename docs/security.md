@@ -179,12 +179,12 @@ tool, not a sandbox.
 ## Nx app scaffolding
 
 `src/app-tools.ts`. **Disabled unless `ENABLE_APP_SCAFFOLD=1`**. `create_app`
-has two modes. `mode=existing` is a constrained generator runner for healthy
-Nx monorepos: it verifies `package.json` and `nx.json`, then runs one fixed Nx
-generator command for `@nx/next:app` or `@nx/react:app` with argv-only process
-spawning and `--no-interactive`. It only runs the workspace-local
-`node_modules/.bin/nx`; it does not use `npx`/`bunx` and does not accept
-arbitrary command strings.
+defaults to `mode=isolated` and has two modes. `mode=existing` is a constrained
+generator runner for healthy Nx monorepos: it verifies `package.json` and
+`nx.json`, then runs one fixed Nx generator command for `@nx/next:app` or
+`@nx/react:app` with argv-only process spawning and `--no-interactive`. It only
+runs the workspace-local `node_modules/.bin/nx`; it does not use `npx`/`bunx`
+and does not accept arbitrary command strings.
 
 `mode=isolated` does not run Nx at all. It writes a constrained Nx + Next
 workspace template under the opened workspace, defaulting to

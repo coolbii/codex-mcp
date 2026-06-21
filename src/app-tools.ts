@@ -413,7 +413,7 @@ export async function createApp(
     throw new CreateAppError("Nx app scaffolding is disabled (set ENABLE_APP_SCAFFOLD=1 to enable).");
   }
   validateInput(input);
-  if ((input.mode ?? "existing") === "isolated") {
+  if ((input.mode ?? "isolated") === "isolated") {
     return createIsolatedApp(guard, ws, input);
   }
   const cwd = await guard.resolveForRead(ws.root, input.path ?? ".");

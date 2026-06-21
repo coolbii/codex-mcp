@@ -794,14 +794,14 @@ export function buildMcpServer(
         title: "Create Nx app",
         description:
           "Use this when the user wants a real React or Next.js app. " +
-          "Use mode=existing for a healthy existing Nx monorepo. Use mode=isolated when the opened workspace has a broken or mixed Nx project graph; isolated writes a clean Nx + Next workspace template under the opened workspace. " +
+          "Defaults to mode=isolated, which writes a clean Nx + Next workspace template under the opened workspace and avoids broken parent Nx graphs. Use mode=existing only for a healthy existing Nx monorepo. " +
           "Existing mode runs the workspace-local node_modules/.bin/nx with a fixed argv; isolated mode writes constrained template files. This never uses npx or an arbitrary shell command.",
         inputSchema: {
           workspaceId: z.string(),
           path: z.string().optional().describe("Workspace-relative base directory. Defaults to the workspace root."),
           appName: z.string().min(2).max(64).describe("Nx app name, e.g. ops-dashboard."),
           framework: z.enum(["next", "react"]).describe("Use next for Next.js app router projects, react for plain React apps. isolated mode currently supports next."),
-          mode: z.enum(["existing", "isolated"]).optional().describe("existing runs Nx generator in the target monorepo; isolated creates a clean Nx workspace folder."),
+          mode: z.enum(["existing", "isolated"]).optional().describe("Defaults to isolated. existing runs Nx generator in the target monorepo; isolated creates a clean Nx workspace folder."),
           directory: z.string().optional().describe("existing: Nx directory option, e.g. apps. isolated: parent folder for the new workspace, defaults to devspace-apps."),
           dryRun: z.boolean().optional().describe("Preview without writing files."),
           packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]).optional().describe("Override auto-detection."),
