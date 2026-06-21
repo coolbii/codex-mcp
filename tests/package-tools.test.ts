@@ -47,8 +47,8 @@ it("detects package manager from packageManager field before lockfiles", async (
 
 it("builds install args with scripts disabled", () => {
   expect(installArgs("npm", ["react"], false)).toEqual(["install", "--ignore-scripts", "--save", "react"]);
-  expect(installArgs("pnpm", ["vitest"], true)).toEqual(["add", "--ignore-scripts", "-D", "vitest"]);
-  expect(installArgs("yarn", ["@types/node"], true)).toEqual(["add", "--mode=skip-builds", "--dev", "@types/node"]);
+  expect(installArgs("pnpm", ["vitest"], true)).toEqual(["pnpm", "add", "--ignore-scripts", "-D", "vitest"]);
+  expect(installArgs("yarn", ["@types/node"], true)).toEqual(["yarn", "add", "--mode=skip-builds", "--dev", "@types/node"]);
   expect(installArgs("bun", ["lucide-react"], false)).toEqual(["add", "--ignore-scripts", "lucide-react"]);
 });
 

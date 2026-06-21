@@ -740,6 +740,7 @@ export function buildMcpServer(
         },
         outputSchema: {
           packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]),
+          command: z.string(),
           args: z.array(z.string()),
           packages: z.array(z.string()),
           cwd: z.string(),
@@ -761,11 +762,12 @@ export function buildMcpServer(
           const status =
             r.timedOut ? "TIMED OUT" : r.signal ? `killed (${r.signal})` : `exit ${r.exitCode}`;
           const body =
-            `Reason: ${reason ?? "Package installation requested"}\n$ ${r.packageManager} ${r.args.join(" ")}\n[${status}${r.truncated ? ", output truncated" : ""}, ${r.durationMs}ms]\n` +
+            `Reason: ${reason ?? "Package installation requested"}\n$ ${r.command} ${r.args.join(" ")}\n[${status}${r.truncated ? ", output truncated" : ""}, ${r.durationMs}ms]\n` +
             (r.stdout ? `\n--- stdout ---\n${r.stdout}` : "") +
             (r.stderr ? `\n--- stderr ---\n${r.stderr}` : "");
           return text(body, {
             packageManager: r.packageManager,
+            command: r.command,
             args: r.args,
             packages: r.packages,
             cwd: r.cwd,

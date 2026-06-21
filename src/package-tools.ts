@@ -25,6 +25,7 @@ export interface InstallPackagesInput {
 
 export interface InstallPackagesResult {
   packageManager: PackageManager;
+  command: string;
   args: string[];
   packages: string[];
   cwd: string;
@@ -52,6 +53,11 @@ const MANAGER_BINS: Record<PackageManager, string> = {
   yarn: "yarn",
   bun: "bun",
 };
+
+function packageManagerCommand(packageManager: PackageManager): string {
+  if (packageManager === "pnpm" || packageManager === "yarn") return "corepack";
+  return MANAGER_BINS[packageManager];
+}
 
 function validatePackages(packages: string[]): string[] {
   if (packages.length === 0) throw new PackageInstallError("packages must not be empty");
@@ -106,9 +112,9 @@ export function installArgs(
     case "npm":
       return ["install", "--ignore-scripts", devDependency ? "--save-dev" : "--save", ...packages];
     case "pnpm":
-      return ["add", "--ignore-scripts", ...(devDependency ? ["-D"] : []), ...packages];
+      return ["pnpm", "add", "--ignore-scripts", ...(devDependency ? ["-D"] : []), ...packages];
     case "yarn":
-      return ["add", "--mode=skip-builds", ...(devDependency ? ["--dev"] : []), ...packages];
+      return ["yarn", "add", "--mode=skip-builds", ...(devDependency ? ["--dev"] : []), ...packages];
     case "bun":
       return ["add", "--ignore-scripts", ...(devDependency ? ["--dev"] : []), ...packages];
   }
@@ -163,7 +169,7 @@ export async function installPackages(
   }
 
   const packageManager = input.packageManager ?? await detectPackageManager(cwd);
-  const command = MANAGER_BINS[packageManager];
+  const command = packageManagerCommand(packageManager);
   const args = installArgs(packageManager, packages, input.devDependency ?? false);
   const startedAt = Date.now();
 
@@ -217,6 +223,7 @@ export async function installPackages(
       clearTimeout(timer);
       resolveResult({
         packageManager,
+        command,
         args,
         packages,
         cwd,
