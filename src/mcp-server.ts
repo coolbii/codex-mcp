@@ -728,6 +728,7 @@ export function buildMcpServer(
             .string()
             .min(1)
             .max(1000)
+            .optional()
             .describe("Short explanation of why these packages are needed and how they will be used."),
           packages: z
             .array(z.string())
@@ -760,7 +761,7 @@ export function buildMcpServer(
           const status =
             r.timedOut ? "TIMED OUT" : r.signal ? `killed (${r.signal})` : `exit ${r.exitCode}`;
           const body =
-            `Reason: ${reason}\n$ ${r.packageManager} ${r.args.join(" ")}\n[${status}${r.truncated ? ", output truncated" : ""}, ${r.durationMs}ms]\n` +
+            `Reason: ${reason ?? "Package installation requested"}\n$ ${r.packageManager} ${r.args.join(" ")}\n[${status}${r.truncated ? ", output truncated" : ""}, ${r.durationMs}ms]\n` +
             (r.stdout ? `\n--- stdout ---\n${r.stdout}` : "") +
             (r.stderr ? `\n--- stderr ---\n${r.stderr}` : "");
           return text(body, {
