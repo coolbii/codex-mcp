@@ -1,7 +1,7 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createApp, createAppCommand, CreateAppError } from "../src/app-tools.js";
+import { createApp, createAppCommand, createIsolatedAppCommand, CreateAppError } from "../src/app-tools.js";
 import { makeFixture, type Fixture } from "./helpers.js";
 import type { AppConfig } from "../src/config.js";
 
@@ -56,6 +56,18 @@ it("builds fixed Nx generator commands", () => {
   });
 });
 
+it("builds fixed isolated app commands", () => {
+  expect(createIsolatedAppCommand({ appName: "demo", framework: "next" })).toEqual({
+    command: "devspace:create-isolated-app",
+    args: ["next", "demo"],
+  });
+
+  expect(createIsolatedAppCommand({ appName: "demo", framework: "next", directory: "apps", dryRun: true })).toEqual({
+    command: "devspace:create-isolated-app",
+    args: ["next", "demo", "--directory=apps", "--dry-run"],
+  });
+});
+
 it("refuses when Nx app scaffolding is disabled", async () => {
   fx = await makeFixture();
   await writeFile(join(fx.root, "package.json"), "{}", "utf8");
@@ -67,6 +79,53 @@ it("refuses when Nx app scaffolding is disabled", async () => {
       framework: "next",
     }),
   ).rejects.toBeInstanceOf(CreateAppError);
+});
+
+it("creates an isolated Nx Next workspace without requiring a healthy root project graph", async () => {
+  fx = await makeFixture();
+  await writeFile(
+    join(fx.root, "package.json"),
+    JSON.stringify({
+      packageManager: "yarn@4.3.1",
+      dependencies: { next: "14.2.3", react: "18.3.1", "react-dom": "18.3.1" },
+      devDependencies: { nx: "19.4.1", "@nx/next": "^19.5.0", typescript: "^5.5.3" },
+    }),
+    "utf8",
+  );
+
+  const r = await createApp(cfg({ enableAppScaffold: true }), fx.guard, fx.ws, {
+    appName: "scroll-trigger-demo",
+    framework: "next",
+    mode: "isolated",
+  });
+
+  expect(r.mode).toBe("isolated");
+  expect(r.exitCode).toBe(0);
+  expect(r.workspaceRoot).toBe(join(fx.root, "devspace-apps", "scroll-trigger-demo"));
+  expect(r.generatedFiles).toContain("package.json");
+  expect(r.generatedFiles).toContain(join("apps", "scroll-trigger-demo", "src", "app", "page.tsx"));
+  await expect(stat(join(r.workspaceRoot, "nx.json"))).resolves.toBeTruthy();
+  const packageJson = JSON.parse(await readFile(join(r.workspaceRoot, "package.json"), "utf8")) as {
+    packageManager?: string;
+    dependencies?: Record<string, string>;
+  };
+  expect(packageJson.packageManager).toBe("yarn@4.3.1");
+  expect(packageJson.dependencies?.next).toBe("14.2.35");
+});
+
+it("dry-runs isolated app creation without creating folders", async () => {
+  fx = await makeFixture();
+  await writeFile(join(fx.root, "package.json"), JSON.stringify({ packageManager: "npm@10.0.0" }), "utf8");
+
+  const r = await createApp(cfg({ enableAppScaffold: true }), fx.guard, fx.ws, {
+    appName: "demo",
+    framework: "next",
+    mode: "isolated",
+    dryRun: true,
+  });
+
+  expect(r.workspaceRoot).toBe(join(fx.root, "devspace-apps", "demo"));
+  await expect(stat(join(fx.root, "devspace-apps"))).rejects.toMatchObject({ code: "ENOENT" });
 });
 
 it("refuses to download Nx through npx or bunx", async () => {

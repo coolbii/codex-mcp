@@ -793,22 +793,26 @@ export function buildMcpServer(
       {
         title: "Create Nx app",
         description:
-          "Use this when the user wants a real React or Next.js app scaffolded inside an existing Nx monorepo. " +
-          "Open the Nx workspace first, inspect package.json/nx.json, then call this with a concise appName. " +
-          "This runs the workspace-local node_modules/.bin/nx with a fixed argv, not npx or an arbitrary shell command.",
+          "Use this when the user wants a real React or Next.js app. " +
+          "Use mode=existing for a healthy existing Nx monorepo. Use mode=isolated when the opened workspace has a broken or mixed Nx project graph; isolated writes a clean Nx + Next workspace template under the opened workspace. " +
+          "Existing mode runs the workspace-local node_modules/.bin/nx with a fixed argv; isolated mode writes constrained template files. This never uses npx or an arbitrary shell command.",
         inputSchema: {
           workspaceId: z.string(),
-          path: z.string().optional().describe("Workspace-relative Nx monorepo directory. Defaults to the workspace root."),
+          path: z.string().optional().describe("Workspace-relative base directory. Defaults to the workspace root."),
           appName: z.string().min(2).max(64).describe("Nx app name, e.g. ops-dashboard."),
-          framework: z.enum(["next", "react"]).describe("Use next for Next.js app router projects, react for plain React apps."),
-          directory: z.string().optional().describe("Optional safe Nx directory option, e.g. apps or products/admin."),
-          dryRun: z.boolean().optional().describe("Preview the Nx generator without writing files."),
+          framework: z.enum(["next", "react"]).describe("Use next for Next.js app router projects, react for plain React apps. isolated mode currently supports next."),
+          mode: z.enum(["existing", "isolated"]).optional().describe("existing runs Nx generator in the target monorepo; isolated creates a clean Nx workspace folder."),
+          directory: z.string().optional().describe("existing: Nx directory option, e.g. apps. isolated: parent folder for the new workspace, defaults to devspace-apps."),
+          dryRun: z.boolean().optional().describe("Preview without writing files."),
           packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]).optional().describe("Override auto-detection."),
         },
         outputSchema: {
           appName: z.string(),
           framework: z.enum(["next", "react"]),
+          mode: z.enum(["existing", "isolated"]),
           cwd: z.string(),
+          workspaceRoot: z.string(),
+          generatedFiles: z.array(z.string()),
           packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]),
           command: z.string(),
           args: z.array(z.string()),
@@ -822,13 +826,14 @@ export function buildMcpServer(
         },
         annotations: { ...WRITE, title: "Create Nx app" },
       },
-      async ({ workspaceId, path, appName, framework, directory, dryRun, packageManager }) =>
+      async ({ workspaceId, path, appName, framework, mode, directory, dryRun, packageManager }) =>
         invoke("create_app", { workspaceId, path: path ?? "." }, async () => {
           const ws = registry.get(workspaceId);
           const r = await createApp(config, guard, ws, {
             ...(path !== undefined ? { path } : {}),
             appName,
             framework,
+            ...(mode !== undefined ? { mode } : {}),
             ...(directory !== undefined ? { directory } : {}),
             ...(dryRun !== undefined ? { dryRun } : {}),
             ...(packageManager !== undefined ? { packageManager } : {}),
@@ -842,7 +847,10 @@ export function buildMcpServer(
           return text(body, {
             appName: r.appName,
             framework: r.framework,
+            mode: r.mode,
             cwd: r.cwd,
+            workspaceRoot: r.workspaceRoot,
+            generatedFiles: r.generatedFiles,
             packageManager: r.packageManager,
             command: r.command,
             args: r.args,

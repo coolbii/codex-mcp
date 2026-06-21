@@ -166,7 +166,7 @@ container/sandbox wrapper (Roadmap). Do not add interpreters to the allowlist.
 separate from shell and should stay separate: `install_packages` accepts
 structured package-name arrays plus a `reason`, chooses `npm`/`pnpm`/`yarn`/`bun`
 from `packageManager` or lockfiles, and injects flags that disable install
-scripts (`--ignore-scripts` or Yarn's `--mode=skip-builds`). It only allows
+scripts (`--ignore-scripts` or Yarn's `--mode=skip-build`). It only allows
 registry package names such as `react`, `react@latest`, or `@scope/pkg`; URLs,
 tarballs, git specs, file paths, and duplicate entries are refused. The model is
 expected to infer the minimal package list from the task and existing
@@ -178,12 +178,20 @@ tool, not a sandbox.
 
 ## Nx app scaffolding
 
-`src/app-tools.ts`. **Disabled unless `ENABLE_APP_SCAFFOLD=1`**. `create_app` is
-a constrained generator runner for existing Nx monorepos. It first verifies
-`package.json` and `nx.json`, then runs one fixed Nx generator command for
-`@nx/next:app` or `@nx/react:app` with argv-only process spawning and
-`--no-interactive`. It only runs the workspace-local `node_modules/.bin/nx`;
-it does not use `npx`/`bunx` and does not accept arbitrary command strings.
+`src/app-tools.ts`. **Disabled unless `ENABLE_APP_SCAFFOLD=1`**. `create_app`
+has two modes. `mode=existing` is a constrained generator runner for healthy
+Nx monorepos: it verifies `package.json` and `nx.json`, then runs one fixed Nx
+generator command for `@nx/next:app` or `@nx/react:app` with argv-only process
+spawning and `--no-interactive`. It only runs the workspace-local
+`node_modules/.bin/nx`; it does not use `npx`/`bunx` and does not accept
+arbitrary command strings.
+
+`mode=isolated` does not run Nx at all. It writes a constrained Nx + Next
+workspace template under the opened workspace, defaulting to
+`devspace-apps/<appName>`, and refuses symlinked parent directories or existing
+targets. This is the safer choice for folders that contain many unrelated
+projects or a broken Nx project graph. The generated workspace still needs a
+package install before it can run.
 
 ## Search / regex (ReDoS)
 
