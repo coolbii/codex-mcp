@@ -5,7 +5,14 @@ import { startHttp } from "../http.js";
 
 async function main(): Promise<void> {
   const config = loadConfig({ transport: "http" });
-  await startHttp(config);
+  const server = await startHttp(config);
+  await new Promise<void>((resolve) => {
+    const shutdown = () => {
+      server.close(() => resolve());
+    };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+  });
 }
 
 main().catch((err: unknown) => {
