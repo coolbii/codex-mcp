@@ -6,8 +6,11 @@ import { startHttp } from "../http.js";
 async function main(): Promise<void> {
   const config = loadConfig({ transport: "http" });
   const server = await startHttp(config);
+  server.ref();
+  const keepAlive = setInterval(() => undefined, 2 ** 30);
   await new Promise<void>((resolve) => {
     const shutdown = () => {
+      clearInterval(keepAlive);
       server.close(() => resolve());
     };
     process.once("SIGINT", shutdown);
