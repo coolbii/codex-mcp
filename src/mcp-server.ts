@@ -22,6 +22,7 @@ import { findFiles, searchFiles } from "./search-tools.js";
 import { writeFile, editFile, showDiff } from "./edit-tools.js";
 import { runCommand } from "./shell-tools.js";
 import { installPackages } from "./package-tools.js";
+import { createApp } from "./app-tools.js";
 import { audit } from "./audit-log.js";
 import { SiteManager, SITE_ARCHETYPES } from "./site-tools.js";
 
@@ -243,8 +244,15 @@ export function buildMcpServer(
   const widgetMeta = {
     "openai/widgetDescription": "Interactive preview for locally generated DevSpace sites.",
     "openai/widgetPrefersBorder": true,
+    "openai/widgetDomain": widgetOrigin,
+    "openai/widgetCSP": {
+      connect_domains: [widgetOrigin],
+      resource_domains: [widgetOrigin],
+      frame_domains: [widgetOrigin],
+    },
     ui: {
       prefersBorder: true,
+      domain: widgetOrigin,
       csp: {
         connectDomains: [widgetOrigin],
         resourceDomains: [widgetOrigin],
@@ -709,11 +717,18 @@ export function buildMcpServer(
       {
         title: "Install packages",
         description:
-          "Install npm packages in an opened workspace using npm, pnpm, yarn, or bun. " +
+          "Use this when a React/Next/Nx implementation needs third-party dependencies. " +
+          "Infer the minimal package list from the user's task and the existing package.json; do not ask the user to enumerate packages manually. " +
+          "The user reviews the package list in the ChatGPT tool approval UI before installation. " +
           "This is opt-in server-side and disables install scripts by default.",
         inputSchema: {
           workspaceId: z.string(),
           path: z.string().optional().describe("Workspace-relative package directory. Defaults to the workspace root."),
+          reason: z
+            .string()
+            .min(1)
+            .max(1000)
+            .describe("Short explanation of why these packages are needed and how they will be used."),
           packages: z
             .array(z.string())
             .min(1)
@@ -733,7 +748,7 @@ export function buildMcpServer(
         },
         annotations: { ...WRITE, title: "Install packages" },
       },
-      async ({ workspaceId, path, packages, devDependency, packageManager }) =>
+      async ({ workspaceId, path, reason, packages, devDependency, packageManager }) =>
         invoke("install_packages", { workspaceId, path: path ?? "." }, async () => {
           const ws = registry.get(workspaceId);
           const r = await installPackages(config, guard, ws, {
@@ -745,7 +760,7 @@ export function buildMcpServer(
           const status =
             r.timedOut ? "TIMED OUT" : r.signal ? `killed (${r.signal})` : `exit ${r.exitCode}`;
           const body =
-            `$ ${r.packageManager} ${r.args.join(" ")}\n[${status}${r.truncated ? ", output truncated" : ""}, ${r.durationMs}ms]\n` +
+            `Reason: ${reason}\n$ ${r.packageManager} ${r.args.join(" ")}\n[${status}${r.truncated ? ", output truncated" : ""}, ${r.durationMs}ms]\n` +
             (r.stdout ? `\n--- stdout ---\n${r.stdout}` : "") +
             (r.stderr ? `\n--- stderr ---\n${r.stderr}` : "");
           return text(body, {
@@ -760,6 +775,67 @@ export function buildMcpServer(
         }),
     );
   }
+
+  server.registerTool(
+    "create_app",
+    {
+      title: "Create Nx app",
+      description:
+        "Use this when the user wants a real React or Next.js app scaffolded inside an existing Nx monorepo. " +
+        "Open the Nx workspace first, inspect package.json/nx.json, then call this with a concise appName. " +
+        "This runs an Nx generator with a fixed argv, not an arbitrary shell command.",
+      inputSchema: {
+        workspaceId: z.string(),
+        path: z.string().optional().describe("Workspace-relative Nx monorepo directory. Defaults to the workspace root."),
+        appName: z.string().min(2).max(64).describe("Nx app name, e.g. ops-dashboard."),
+        framework: z.enum(["next", "react"]).describe("Use next for Next.js app router projects, react for plain React apps."),
+        directory: z.string().optional().describe("Optional safe Nx directory option, e.g. apps or products/admin."),
+        dryRun: z.boolean().optional().describe("Preview the Nx generator without writing files."),
+        packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]).optional().describe("Override auto-detection."),
+      },
+      outputSchema: {
+        appName: z.string(),
+        framework: z.enum(["next", "react"]),
+        cwd: z.string(),
+        packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]),
+        command: z.string(),
+        args: z.array(z.string()),
+        exitCode: z.number().int().nullable(),
+        timedOut: z.boolean(),
+        truncated: z.boolean(),
+      },
+      annotations: { ...WRITE, title: "Create Nx app" },
+    },
+    async ({ workspaceId, path, appName, framework, directory, dryRun, packageManager }) =>
+      invoke("create_app", { workspaceId, path: path ?? "." }, async () => {
+        const ws = registry.get(workspaceId);
+        const r = await createApp(config, guard, ws, {
+          ...(path !== undefined ? { path } : {}),
+          appName,
+          framework,
+          ...(directory !== undefined ? { directory } : {}),
+          ...(dryRun !== undefined ? { dryRun } : {}),
+          ...(packageManager !== undefined ? { packageManager } : {}),
+        });
+        const status =
+          r.timedOut ? "TIMED OUT" : r.signal ? `killed (${r.signal})` : `exit ${r.exitCode}`;
+        const body =
+          `$ ${r.command} ${r.args.join(" ")}\n[${status}${r.truncated ? ", output truncated" : ""}, ${r.durationMs}ms]\n` +
+          (r.stdout ? `\n--- stdout ---\n${r.stdout}` : "") +
+          (r.stderr ? `\n--- stderr ---\n${r.stderr}` : "");
+        return text(body, {
+          appName: r.appName,
+          framework: r.framework,
+          cwd: r.cwd,
+          packageManager: r.packageManager,
+          command: r.command,
+          args: r.args,
+          exitCode: r.exitCode,
+          timedOut: r.timedOut,
+          truncated: r.truncated,
+        });
+      }),
+  );
 
   if (config.enableShell) {
     server.registerTool(

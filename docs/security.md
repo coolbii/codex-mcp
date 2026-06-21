@@ -164,15 +164,24 @@ container/sandbox wrapper (Roadmap). Do not add interpreters to the allowlist.
 
 `src/package-tools.ts`. **Disabled unless `ENABLE_PACKAGE_INSTALL=1`**. This is
 separate from shell and should stay separate: `install_packages` accepts
-structured package-name arrays, chooses `npm`/`pnpm`/`yarn`/`bun` from
-`packageManager` or lockfiles, and injects flags that disable install scripts
-(`--ignore-scripts` or Yarn's `--mode=skip-builds`). It only allows registry
-package names such as `react`, `react@latest`, or `@scope/pkg`; URLs, tarballs,
-git specs, file paths, and duplicate entries are refused.
+structured package-name arrays plus a `reason`, chooses `npm`/`pnpm`/`yarn`/`bun`
+from `packageManager` or lockfiles, and injects flags that disable install
+scripts (`--ignore-scripts` or Yarn's `--mode=skip-builds`). It only allows
+registry package names such as `react`, `react@latest`, or `@scope/pkg`; URLs,
+tarballs, git specs, file paths, and duplicate entries are refused. The model is
+expected to infer the minimal package list from the task and existing
+`package.json`; the user reviews the tool call before approving it.
 
 This still fetches third-party code and mutates `package.json` / lockfiles, so
 enable it only for workspaces where that is expected. It is a safer workflow
 tool, not a sandbox.
+
+## Nx app scaffolding
+
+`src/app-tools.ts`. `create_app` is a constrained generator runner for existing
+Nx monorepos. It first verifies `package.json` and `nx.json`, then runs one fixed
+Nx generator command for `@nx/next:app` or `@nx/react:app` with argv-only process
+spawning and `--no-interactive`. It does not accept arbitrary command strings.
 
 ## Search / regex (ReDoS)
 

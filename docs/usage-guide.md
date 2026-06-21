@@ -132,7 +132,8 @@ ChatGPT instead of Codex.
 | `write_file` / `edit_file` | ✗ | Create/overwrite, or exact-string edit — prompts |
 | `create_site` / `update_site` | ✗ | Create or update a versioned static website preview |
 | `list_sites` / `get_site_versions` | ✓ | Inspect generated site previews and their git history |
-| `install_packages` | ✗ | Optional. Enabled only with `ENABLE_PACKAGE_INSTALL=1`; installs registry packages with install scripts disabled. |
+| `install_packages` | ✗ | Optional. Enabled only with `ENABLE_PACKAGE_INSTALL=1`; ChatGPT infers registry packages, you approve the list, install scripts stay disabled. |
+| `create_app` | ✗ | Scaffold a React or Next.js app inside an existing Nx monorepo using a fixed Nx generator command. |
 
 Generated site previews are written under
 `<first ALLOWED_ROOTS>/devspace-sites/<siteId>/` and served at
@@ -146,8 +147,10 @@ Generated site previews are written under
   only reach that scope. devspace refuses dangerous roots outright.
 - **Shell stays off** by default — keep it that way for a ChatGPT-facing server.
 - **Package install is opt-in** — enable `ENABLE_PACKAGE_INSTALL=1` only when
-  React/Next/Nx generation needs dependencies. It is not a generic shell; it
-  only accepts package-name arrays and disables install scripts by default.
+  React/Next/Nx generation needs dependencies. ChatGPT should infer the minimal
+  package list from the task and `package.json`; you review that list in the
+  tool approval UI. It is not a generic shell and install scripts are disabled
+  by default.
 - Treat `OWNER_TOKEN` and `data/devspace-oauth.json` as secrets (the latter is
   git-ignored).
 

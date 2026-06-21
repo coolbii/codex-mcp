@@ -164,7 +164,8 @@ locally first with `node scripts/smoke-oauth.mjs`.
 | `create_site` | ✗ | Create a versioned static website preview under `devspace-sites`. |
 | `update_site` | ✗ | Update a generated site and commit a new version. |
 | `list_sites` / `get_site_versions` | ✓ | Inspect generated sites and git history. |
-| `install_packages` | ✗ | **Only if `ENABLE_PACKAGE_INSTALL=1`.** Install registry packages with npm/pnpm/yarn/bun; install scripts disabled by default. |
+| `install_packages` | ✗ | **Only if `ENABLE_PACKAGE_INSTALL=1`.** Install model-inferred registry packages with npm/pnpm/yarn/bun; install scripts disabled by default. |
+| `create_app` | ✗ | Scaffold a React or Next.js app inside an existing Nx monorepo using a fixed Nx generator command. |
 | `run_command` | ✗ | **Only if `ENABLE_SHELL=1`.** Allowlisted, no-shell command. |
 
 Every call (except `list_roots`/`open_workspace`/`list_workspaces`) takes the
