@@ -114,7 +114,7 @@ export function installArgs(
     case "pnpm":
       return ["pnpm", "add", "--ignore-scripts", ...(devDependency ? ["-D"] : []), ...packages];
     case "yarn":
-      return ["yarn", "add", "--mode=skip-builds", ...(devDependency ? ["--dev"] : []), ...packages];
+      return ["yarn", "add", "--mode=skip-build", ...(devDependency ? ["--dev"] : []), ...packages];
     case "bun":
       return ["add", "--ignore-scripts", ...(devDependency ? ["--dev"] : []), ...packages];
   }
