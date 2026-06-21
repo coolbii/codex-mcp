@@ -83,8 +83,15 @@ npm run start:http
 # → http://127.0.0.1:7676/mcp
 ```
 
-During development, `npm run dev:http` / `npm run dev:stdio` run from TypeScript
-with reload.
+During development, prefer hot reload:
+
+```bash
+npm run dev:http
+```
+
+`dev:http` loads `.env` automatically, runs from TypeScript, and restarts when
+`src/**/*.ts` changes. Use `npm run build && npm run start:http` for a compiled
+production-style run.
 
 ## Connect a client
 

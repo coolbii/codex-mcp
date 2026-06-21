@@ -14,8 +14,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev:http": "tsx watch src/bin/http.ts",
-    "dev:stdio": "tsx src/bin/stdio.ts",
+    "dev:http": "node --env-file-if-exists=.env --import tsx --watch src/bin/http.ts",
+    "dev:stdio": "node --env-file-if-exists=.env --import tsx src/bin/stdio.ts",
     "start:http": "node dist/bin/http.js",
     "start:stdio": "node dist/bin/stdio.js",
     "test": "vitest run",

@@ -89,11 +89,14 @@ ingress:
 
 ```bash
 # terminal 1 — start devspace
-cd ~/bindev/devspace && npm run start:http
+cd ~/bindev/devspace && npm run dev:http
 
 # terminal 2 — start the tunnel
 cloudflared tunnel run devspace
 ```
+
+`dev:http` loads `.env` automatically and hot-reloads TypeScript changes. For a
+compiled production-style run, use `npm run build && npm run start:http`.
 
 Leave both running. (To run them automatically at login, make them launchd
 services — ask and the repo can include a template.)

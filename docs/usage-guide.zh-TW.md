@@ -86,11 +86,14 @@ ingress:
 
 ```bash
 # 終端機 1 —— 開 devspace
-cd ~/bindev/devspace && npm run start:http
+cd ~/bindev/devspace && npm run dev:http
 
 # 終端機 2 —— 開 tunnel
 cloudflared tunnel run devspace
 ```
+
+`dev:http` 會自動讀 `.env`，直接跑 TypeScript，並在 `src/**/*.ts` 變更時重啟。
+如果要用編譯後版本再跑：`npm run build && npm run start:http`。
 
 兩個保持開著就好。（想開機自動跑，可以做成 launchd service —— 要的話我幫你加範本。）
 
