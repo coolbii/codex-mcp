@@ -133,7 +133,7 @@ ChatGPT instead of Codex.
 | `create_site` / `update_site` | ✗ | Create or update a versioned static website preview |
 | `list_sites` / `get_site_versions` | ✓ | Inspect generated site previews and their git history |
 | `install_packages` | ✗ | Optional. Enabled only with `ENABLE_PACKAGE_INSTALL=1`; ChatGPT infers registry packages, you approve the list, install scripts stay disabled. |
-| `create_app` | ✗ | Scaffold a React or Next.js app inside an existing Nx monorepo using a fixed Nx generator command. |
+| `create_app` | ✗ | Optional. Enabled only with `ENABLE_APP_SCAFFOLD=1`; scaffolds React/Next apps with the workspace-local Nx binary. |
 
 Generated site previews are written under
 `<first ALLOWED_ROOTS>/devspace-sites/<siteId>/` and served at
@@ -151,6 +151,9 @@ Generated site previews are written under
   package list from the task and `package.json`; you review that list in the
   tool approval UI. It is not a generic shell and install scripts are disabled
   by default.
+- **Nx app scaffolding is opt-in** — enable `ENABLE_APP_SCAFFOLD=1` only for
+  trusted Nx repos. It runs `node_modules/.bin/nx` from that workspace and will
+  not download Nx through `npx` or `bunx`.
 - Treat `OWNER_TOKEN` and `data/devspace-oauth.json` as secrets (the latter is
   git-ignored).
 

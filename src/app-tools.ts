@@ -5,7 +5,7 @@
  * workspace that already looks like an Nx monorepo.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { access, stat } from "node:fs/promises";
+import { access, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { AppConfig } from "./config.js";
 import type { PathGuard } from "./path-guard.js";
@@ -63,28 +63,35 @@ function generatorFor(framework: AppFramework): string {
   return "@nx/react:app";
 }
 
+function nxBinaryName(): string {
+  return process.platform === "win32" ? "nx.cmd" : "nx";
+}
+
+async function localNxBinary(cwd: string): Promise<string> {
+  const nxBin = await realpath(join(cwd, "node_modules", ".bin", nxBinaryName())).catch(() => null);
+  if (!nxBin) {
+    throw new CreateAppError(
+      "Local Nx binary not found at node_modules/.bin/nx. Run your package manager install first; create_app will not download Nx with npx/bunx.",
+    );
+  }
+  return nxBin;
+}
+
 export function createAppCommand(
-  packageManager: PackageManager,
+  nxBin: string,
   input: Pick<CreateAppInput, "appName" | "framework" | "directory" | "dryRun">,
 ): { command: string; args: string[] } {
-  const generatorArgs = [
-    "g",
-    generatorFor(input.framework),
-    input.appName,
-    "--no-interactive",
-    ...(input.directory ? [`--directory=${input.directory}`] : []),
-    ...(input.dryRun ? ["--dry-run"] : []),
-  ];
-  switch (packageManager) {
-    case "npm":
-      return { command: "npx", args: ["nx", ...generatorArgs] };
-    case "pnpm":
-      return { command: "pnpm", args: ["exec", "nx", ...generatorArgs] };
-    case "yarn":
-      return { command: "yarn", args: ["nx", ...generatorArgs] };
-    case "bun":
-      return { command: "bunx", args: ["nx", ...generatorArgs] };
-  }
+  return {
+    command: nxBin,
+    args: [
+      "g",
+      generatorFor(input.framework),
+      input.appName,
+      "--no-interactive",
+      ...(input.directory ? [`--directory=${input.directory}`] : []),
+      ...(input.dryRun ? ["--dry-run"] : []),
+    ],
+  };
 }
 
 function validateInput(input: CreateAppInput): void {
@@ -130,6 +137,9 @@ export async function createApp(
   ws: Workspace,
   input: CreateAppInput,
 ): Promise<CreateAppResult> {
+  if (!config.enableAppScaffold) {
+    throw new CreateAppError("Nx app scaffolding is disabled (set ENABLE_APP_SCAFFOLD=1 to enable).");
+  }
   validateInput(input);
   const cwd = await guard.resolveForRead(ws.root, input.path ?? ".");
   const st = await stat(cwd).catch(() => null);
@@ -137,7 +147,8 @@ export async function createApp(
   await assertNxWorkspace(cwd);
 
   const packageManager = input.packageManager ?? await detectPackageManager(cwd);
-  const { command, args } = createAppCommand(packageManager, input);
+  const nxBin = await localNxBinary(cwd);
+  const { command, args } = createAppCommand(nxBin, input);
   const startedAt = Date.now();
 
   return await new Promise<CreateAppResult>((resolveResult, reject) => {

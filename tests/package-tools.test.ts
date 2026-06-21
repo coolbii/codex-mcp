@@ -27,6 +27,7 @@ function cfg(over: Partial<AppConfig>): AppConfig {
     shellMode: "restricted",
     logShellCommands: false,
     enablePackageInstall: false,
+    enableAppScaffold: false,
     maxReadBytes: 1_000_000,
     maxSearchMatches: 500,
     maxSearchFileBytes: 5_000_000,

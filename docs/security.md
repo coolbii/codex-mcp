@@ -178,10 +178,12 @@ tool, not a sandbox.
 
 ## Nx app scaffolding
 
-`src/app-tools.ts`. `create_app` is a constrained generator runner for existing
-Nx monorepos. It first verifies `package.json` and `nx.json`, then runs one fixed
-Nx generator command for `@nx/next:app` or `@nx/react:app` with argv-only process
-spawning and `--no-interactive`. It does not accept arbitrary command strings.
+`src/app-tools.ts`. **Disabled unless `ENABLE_APP_SCAFFOLD=1`**. `create_app` is
+a constrained generator runner for existing Nx monorepos. It first verifies
+`package.json` and `nx.json`, then runs one fixed Nx generator command for
+`@nx/next:app` or `@nx/react:app` with argv-only process spawning and
+`--no-interactive`. It only runs the workspace-local `node_modules/.bin/nx`;
+it does not use `npx`/`bunx` and does not accept arbitrary command strings.
 
 ## Search / regex (ReDoS)
 

@@ -776,66 +776,68 @@ export function buildMcpServer(
     );
   }
 
-  server.registerTool(
-    "create_app",
-    {
-      title: "Create Nx app",
-      description:
-        "Use this when the user wants a real React or Next.js app scaffolded inside an existing Nx monorepo. " +
-        "Open the Nx workspace first, inspect package.json/nx.json, then call this with a concise appName. " +
-        "This runs an Nx generator with a fixed argv, not an arbitrary shell command.",
-      inputSchema: {
-        workspaceId: z.string(),
-        path: z.string().optional().describe("Workspace-relative Nx monorepo directory. Defaults to the workspace root."),
-        appName: z.string().min(2).max(64).describe("Nx app name, e.g. ops-dashboard."),
-        framework: z.enum(["next", "react"]).describe("Use next for Next.js app router projects, react for plain React apps."),
-        directory: z.string().optional().describe("Optional safe Nx directory option, e.g. apps or products/admin."),
-        dryRun: z.boolean().optional().describe("Preview the Nx generator without writing files."),
-        packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]).optional().describe("Override auto-detection."),
+  if (config.enableAppScaffold) {
+    server.registerTool(
+      "create_app",
+      {
+        title: "Create Nx app",
+        description:
+          "Use this when the user wants a real React or Next.js app scaffolded inside an existing Nx monorepo. " +
+          "Open the Nx workspace first, inspect package.json/nx.json, then call this with a concise appName. " +
+          "This runs the workspace-local node_modules/.bin/nx with a fixed argv, not npx or an arbitrary shell command.",
+        inputSchema: {
+          workspaceId: z.string(),
+          path: z.string().optional().describe("Workspace-relative Nx monorepo directory. Defaults to the workspace root."),
+          appName: z.string().min(2).max(64).describe("Nx app name, e.g. ops-dashboard."),
+          framework: z.enum(["next", "react"]).describe("Use next for Next.js app router projects, react for plain React apps."),
+          directory: z.string().optional().describe("Optional safe Nx directory option, e.g. apps or products/admin."),
+          dryRun: z.boolean().optional().describe("Preview the Nx generator without writing files."),
+          packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]).optional().describe("Override auto-detection."),
+        },
+        outputSchema: {
+          appName: z.string(),
+          framework: z.enum(["next", "react"]),
+          cwd: z.string(),
+          packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]),
+          command: z.string(),
+          args: z.array(z.string()),
+          exitCode: z.number().int().nullable(),
+          timedOut: z.boolean(),
+          truncated: z.boolean(),
+        },
+        annotations: { ...WRITE, title: "Create Nx app" },
       },
-      outputSchema: {
-        appName: z.string(),
-        framework: z.enum(["next", "react"]),
-        cwd: z.string(),
-        packageManager: z.enum(["npm", "pnpm", "yarn", "bun"]),
-        command: z.string(),
-        args: z.array(z.string()),
-        exitCode: z.number().int().nullable(),
-        timedOut: z.boolean(),
-        truncated: z.boolean(),
-      },
-      annotations: { ...WRITE, title: "Create Nx app" },
-    },
-    async ({ workspaceId, path, appName, framework, directory, dryRun, packageManager }) =>
-      invoke("create_app", { workspaceId, path: path ?? "." }, async () => {
-        const ws = registry.get(workspaceId);
-        const r = await createApp(config, guard, ws, {
-          ...(path !== undefined ? { path } : {}),
-          appName,
-          framework,
-          ...(directory !== undefined ? { directory } : {}),
-          ...(dryRun !== undefined ? { dryRun } : {}),
-          ...(packageManager !== undefined ? { packageManager } : {}),
-        });
-        const status =
-          r.timedOut ? "TIMED OUT" : r.signal ? `killed (${r.signal})` : `exit ${r.exitCode}`;
-        const body =
-          `$ ${r.command} ${r.args.join(" ")}\n[${status}${r.truncated ? ", output truncated" : ""}, ${r.durationMs}ms]\n` +
-          (r.stdout ? `\n--- stdout ---\n${r.stdout}` : "") +
-          (r.stderr ? `\n--- stderr ---\n${r.stderr}` : "");
-        return text(body, {
-          appName: r.appName,
-          framework: r.framework,
-          cwd: r.cwd,
-          packageManager: r.packageManager,
-          command: r.command,
-          args: r.args,
-          exitCode: r.exitCode,
-          timedOut: r.timedOut,
-          truncated: r.truncated,
-        });
-      }),
-  );
+      async ({ workspaceId, path, appName, framework, directory, dryRun, packageManager }) =>
+        invoke("create_app", { workspaceId, path: path ?? "." }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await createApp(config, guard, ws, {
+            ...(path !== undefined ? { path } : {}),
+            appName,
+            framework,
+            ...(directory !== undefined ? { directory } : {}),
+            ...(dryRun !== undefined ? { dryRun } : {}),
+            ...(packageManager !== undefined ? { packageManager } : {}),
+          });
+          const status =
+            r.timedOut ? "TIMED OUT" : r.signal ? `killed (${r.signal})` : `exit ${r.exitCode}`;
+          const body =
+            `$ ${r.command} ${r.args.join(" ")}\n[${status}${r.truncated ? ", output truncated" : ""}, ${r.durationMs}ms]\n` +
+            (r.stdout ? `\n--- stdout ---\n${r.stdout}` : "") +
+            (r.stderr ? `\n--- stderr ---\n${r.stderr}` : "");
+          return text(body, {
+            appName: r.appName,
+            framework: r.framework,
+            cwd: r.cwd,
+            packageManager: r.packageManager,
+            command: r.command,
+            args: r.args,
+            exitCode: r.exitCode,
+            timedOut: r.timedOut,
+            truncated: r.truncated,
+          });
+        }),
+    );
+  }
 
   if (config.enableShell) {
     server.registerTool(

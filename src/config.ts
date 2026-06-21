@@ -71,6 +71,8 @@ export interface AppConfig {
   logShellCommands: boolean;
   /** Package installation is a separate opt-in capability from shell. */
   enablePackageInstall: boolean;
+  /** Nx app scaffolding runs project code, so it is opt-in too. */
+  enableAppScaffold: boolean;
 
   /** Resource caps. */
   maxReadBytes: number;
@@ -413,6 +415,12 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
         "install scripts are disabled by default by the tool.",
     );
   }
+  const enableAppScaffold = bool(env.ENABLE_APP_SCAFFOLD, false);
+  if (enableAppScaffold) {
+    warn(
+      "Nx app scaffold tool ENABLED. Nx generators execute project dependencies and can mutate the workspace.",
+    );
+  }
 
   const config: AppConfig = {
     host,
@@ -432,6 +440,7 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
     shellMode,
     logShellCommands: bool(env.LOG_SHELL_COMMANDS, false),
     enablePackageInstall,
+    enableAppScaffold,
     maxReadBytes: int(env.MAX_READ_BYTES, 2_000_000, "MAX_READ_BYTES"),
     maxSearchMatches: int(env.MAX_SEARCH_MATCHES, 500, "MAX_SEARCH_MATCHES"),
     maxSearchFileBytes: int(env.MAX_SEARCH_FILE_BYTES, 5_000_000, "MAX_SEARCH_FILE_BYTES"),

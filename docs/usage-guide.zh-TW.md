@@ -128,7 +128,7 @@ open_workspace → search_files / read_file → show_diff → edit_file
 | `create_site` / `update_site` | ✗ | 建立或更新有 git 版控的靜態網站 preview |
 | `list_sites` / `get_site_versions` | ✓ | 檢視產生出的網站 preview 與 git history |
 | `install_packages` | ✗ | 選配。只有 `ENABLE_PACKAGE_INSTALL=1` 才會開；ChatGPT 推導 registry 套件，你審核清單，預設停用 install scripts。 |
-| `create_app` | ✗ | 在既有 Nx monorepo 內用固定 Nx generator 建立 React 或 Next.js app。 |
+| `create_app` | ✗ | 選配。只有 `ENABLE_APP_SCAFFOLD=1` 才會開；用 workspace-local Nx binary 建立 React/Next app。 |
 
 網站 preview 會寫到 `<第一個 ALLOWED_ROOTS>/devspace-sites/<siteId>/`，
 並透過 `<PUBLIC_BASE_URL>/sites/<siteId>/` 提供預覽。詳細看
@@ -143,6 +143,8 @@ open_workspace → search_files / read_file → show_diff → edit_file
 - **package install 也是選配** —— 需要 React/Next/Nx 產物時再開 `ENABLE_PACKAGE_INSTALL=1`；
   ChatGPT 會依任務和 `package.json` 推導最小套件清單，你在工具批准 UI 審核。它不是任意
   shell，且預設不跑 postinstall/install scripts。
+- **Nx app scaffolding 也是選配** —— 只對信任的 Nx repo 開 `ENABLE_APP_SCAFFOLD=1`。
+  它會執行該 workspace 的 `node_modules/.bin/nx`，不會透過 `npx` 或 `bunx` 下載 Nx。
 - `OWNER_TOKEN` 和 `data/devspace-oauth.json` 當機密保管（後者已被 .gitignore）。
 
 ## 信任它之前先驗證
