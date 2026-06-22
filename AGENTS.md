@@ -63,6 +63,16 @@ remove them:
   persisted (never access tokens / codes / the owner token). Verified by
   `tests/oauth.test.ts` + `scripts/smoke-oauth.mjs`.
 
+- **Site / app / preview features (`/sites`, `/app-previews`, `/_next`).** These
+  routes are behind the Host/Origin guard with **unguessable random preview ids**;
+  the `/_next` proxy is **confined to `_next/`** (no `/api` escape); served sites
+  get a **`sandbox` CSP** (opaque origin). Package installs force
+  `npm_config_ignore_scripts=true` + `YARN_ENABLE_SCRIPTS=false`; the local `nx`
+  binary's realpath must stay inside the workspace. **Refresh tokens MUST rotate**
+  — do not reintroduce a "stable refresh token" (it was a confirmed finding). Keep
+  `ENABLE_PACKAGE_INSTALL` / `ENABLE_APP_SCAFFOLD` default-off. Verified by
+  `tests/oauth.test.ts` + the route/confinement checks.
+
 ## Layered-defense rule
 
 Defenses are deliberately redundant. When in doubt, **add** a check; do not

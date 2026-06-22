@@ -8,6 +8,7 @@
  * scripts unless a future operator-controlled policy says otherwise.
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { devNull } from "node:os";
 import { readFile, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { AppConfig } from "./config.js";
@@ -142,6 +143,12 @@ function scrubbedEnv(): NodeJS.ProcessEnv {
     CI: "1",
     npm_config_fund: "false",
     npm_config_audit: "false",
+    // Disable install lifecycle scripts for EVERY manager regardless of the
+    // per-command flag (yarn classic ignores --mode=skip-build), and ignore the
+    // operator's global npmrc so an untrusted workspace can't inherit its secrets.
+    npm_config_ignore_scripts: "true",
+    YARN_ENABLE_SCRIPTS: "false",
+    npm_config_userconfig: devNull,
   };
   for (const k of allow) {
     const v = process.env[k];

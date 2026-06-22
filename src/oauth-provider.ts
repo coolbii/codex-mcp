@@ -428,6 +428,12 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
     }
     const granted = scopes && scopes.length ? scopes.filter((s) => info.scopes.includes(s)) : info.scopes;
 
+    // Rotate the refresh token: a leaked/old refresh token stops working once
+    // the legitimate client next refreshes (OAuth 2.1 guidance for public clients).
+    this.refreshTokens.delete(refreshToken);
+    const newRefresh = newToken();
+    this.refreshTokens.set(newRefresh, { clientId: info.clientId, scopes: info.scopes, resource: info.resource });
+
     const access = newToken();
     this.accessTokens.set(access, {
       clientId: info.clientId,
@@ -436,13 +442,13 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
       expiresAt: Date.now() + ACCESS_TTL_SEC * 1000,
     });
     this.persist();
-    audit({ event: "auth_ok", success: true, detail: "oauth refresh ok" });
+    audit({ event: "auth_ok", success: true, detail: "oauth refresh ok (rotated)" });
     return {
       access_token: access,
       token_type: "Bearer",
       expires_in: ACCESS_TTL_SEC,
       scope: granted.join(" "),
-      refresh_token: refreshToken,
+      refresh_token: newRefresh,
     };
   }
 

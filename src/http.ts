@@ -50,6 +50,15 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
     app.use(auth.router);
   }
 
+  // The site/preview routes are loaded by the ChatGPT iframe (a browser that
+  // cannot carry the OAuth bearer). They are protected by: the same
+  // DNS-rebinding Host/Origin guard as /mcp, an UNGUESSABLE random id (the URL
+  // is the capability), path containment, and — for served sites — a `sandbox`
+  // CSP so the model-written HTML/JS runs in an opaque origin and can never
+  // touch the auth/token surface that shares this hostname.
+  const previewGuard = hostOriginGuard(config.allowedHosts, config.allowedOrigins);
+  app.use(["/sites", "/app-previews", "/_next"], previewGuard);
+
   app.get(/^\/sites\/([^/]+)(?:\/(.*))?$/, async (req: Request, res: Response) => {
     try {
       const siteIdParam = req.params[0];
@@ -61,6 +70,14 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
       const file = await siteManager.previewFile(siteId, path, version);
       res.type(file.contentType);
       res.setHeader("Cache-Control", version ? "public, max-age=31536000, immutable" : "no-store");
+      // Opaque-origin sandbox: the generated site renders + runs its own JS but
+      // is isolated from this origin's OAuth/MCP surface. nosniff stops MIME
+      // confusion turning an asset into executable content on this origin.
+      res.setHeader(
+        "Content-Security-Policy",
+        "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads",
+      );
+      res.setHeader("X-Content-Type-Options", "nosniff");
       res.sendFile(file.absolutePath);
     } catch (err) {
       const e = err as Error;

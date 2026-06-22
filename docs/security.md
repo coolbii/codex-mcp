@@ -218,6 +218,42 @@ then serve every file under it. The shared containment helper detects filesystem
 case-sensitivity once at startup and folds case accordingly — in both the config
 gate and the live read/write boundary.
 
+## Generated sites, app scaffolding & previews (opt-in)
+
+These later features expand devspace from a file sandbox into something that can
+build and *run* web apps, so they reintroduce code execution and are treated as
+such:
+
+- **Code-execution features are opt-in, default OFF.** `install_packages` needs
+  `ENABLE_PACKAGE_INSTALL=1`; `create_app` / `start_app_preview` need
+  `ENABLE_APP_SCAFFOLD=1`. Enabling them trusts the workspace's dependencies —
+  running a dev server executes arbitrary project code by design.
+- **Package installs** disable lifecycle scripts on *every* manager via
+  `npm_config_ignore_scripts=true` + `YARN_ENABLE_SCRIPTS=false` (not just a
+  per-command flag — yarn classic silently ignores `--mode=skip-build`), ignore
+  the global npmrc, accept registry package specs only, and run `shell:false`
+  with scrubbed env.
+- **Nx scaffolding** runs only a workspace-local `node_modules/.bin/nx` whose
+  realpath is asserted to stay inside the workspace (no `npx`/`bunx` download, no
+  symlink-out to a host binary).
+- **Preview/site HTTP routes** (`/sites/*`, `/app-previews/*`, `/_next/*`) are
+  loaded by the ChatGPT iframe, which cannot carry the OAuth bearer. They are
+  protected by: the same Host/Origin (DNS-rebinding) guard as `/mcp`, an
+  **unguessable random preview id** (the URL is the capability), path containment
+  (the id-less `/_next` proxy is confined to `_next/` assets — it cannot reach the
+  app's `/api/*` via `..%2f`), and — for served sites — a `sandbox` CSP so
+  model-written HTML/JS runs in an **opaque origin** and can never touch the
+  auth/token surface that shares the hostname.
+- Generated sites/apps are written inside the sandbox (under the first allowed
+  root) via the PathGuard.
+
+**Residual:** enabling these features trusts the workspace's npm dependencies
+(only *install* scripts are blocked, not the code that runs when the app runs).
+Keep them off unless the workspace is one you would run locally anyway. These
+were hardened after an adversarial review that found a public `/_next` open
+proxy, a yarn-path script-execution RCE, and a removed refresh-token rotation —
+all fixed; see the review notes / tests.
+
 ## Logging
 
 `src/audit-log.ts`. Structured JSON to **stderr only** (stdout is the stdio MCP

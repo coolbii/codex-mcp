@@ -8,11 +8,14 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
+import { randomBytes } from "node:crypto";
+import { devNull } from "node:os";
 import { access, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Request, Response } from "express";
 import type { AppConfig } from "./config.js";
 import type { PathGuard } from "./path-guard.js";
+import { isInsideOrEqual } from "./path-util.js";
 import type { Workspace } from "./workspaces.js";
 import { detectPackageManager, type PackageManager } from "./package-tools.js";
 
@@ -45,6 +48,7 @@ export interface StartAppPreviewResult {
 
 interface PreviewProcess {
   previewId: string;
+  projectKey: string;
   workspaceRoot: string;
   projectName: string;
   port: number;
@@ -61,14 +65,11 @@ export class AppPreviewError extends Error {
   }
 }
 
-function previewIdFor(workspaceRoot: string, projectName: string): string {
-  const raw = `${workspaceRoot}:${projectName}`;
-  let hash = 2166136261;
-  for (let i = 0; i < raw.length; i += 1) {
-    hash ^= raw.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `${projectName.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "app"}-${(hash >>> 0).toString(16)}`;
+/** Unguessable preview id: the URL is the capability for the iframe to reach it. */
+function newPreviewId(projectName: string): string {
+  const slug =
+    projectName.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "app";
+  return `${slug}-${randomBytes(16).toString("hex")}`;
 }
 
 function publicBase(config: AppConfig): string {
@@ -84,6 +85,12 @@ function scrubbedEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     YARN_ENABLE_IMMUTABLE_INSTALLS: "false",
     npm_config_fund: "false",
     npm_config_audit: "false",
+    // Disable install lifecycle scripts for EVERY manager regardless of the
+    // per-command flag (covers yarn classic, where --mode=skip-build is a no-op),
+    // and ignore the user's global npmrc so a workspace cannot inherit secrets.
+    npm_config_ignore_scripts: "true",
+    YARN_ENABLE_SCRIPTS: "false",
+    npm_config_userconfig: devNull,
     ...extra,
   };
   for (const k of allow) {
@@ -138,7 +145,11 @@ function nxBinaryName(): string {
 }
 
 async function localNxBinary(cwd: string): Promise<string | null> {
-  return realpath(join(cwd, "node_modules", ".bin", nxBinaryName())).catch(() => null);
+  const nxBin = await realpath(join(cwd, "node_modules", ".bin", nxBinaryName())).catch(() => null);
+  // The resolved binary must stay inside the workspace — a symlinked nx pointing
+  // outside the sandbox would let an attacker run an arbitrary host binary.
+  if (!nxBin || !isInsideOrEqual(nxBin, cwd)) return null;
+  return nxBin;
 }
 
 function appendLog(current: string, chunk: Buffer, cap: number): string {
@@ -220,6 +231,7 @@ function rewritePreviewText(body: string, previewPath: string): string {
 
 export class AppPreviewManager {
   private readonly previews = new Map<string, PreviewProcess>();
+  private readonly projectIndex = new Map<string, string>(); // projectKey -> previewId (for reuse)
   private latestPreviewId: string | null = null;
 
   constructor(
@@ -242,13 +254,14 @@ export class AppPreviewManager {
 
     const projectName = input.projectName ?? await readPackageName(workspaceRoot);
     const packageManager = input.packageManager ?? await detectPackageManager(workspaceRoot);
-    const previewId = previewIdFor(workspaceRoot, projectName);
-    const existing = this.previews.get(previewId);
-    if (existing && !existing.child.killed && existing.child.exitCode === null) {
-      this.latestPreviewId = previewId;
-      const previewUrl = `${publicBase(this.config)}/app-previews/${encodeURIComponent(previewId)}/`;
+    const projectKey = `${workspaceRoot}::${projectName}`;
+    const existingId = this.projectIndex.get(projectKey);
+    const existing = existingId ? this.previews.get(existingId) : undefined;
+    if (existingId && existing && !existing.child.killed && existing.child.exitCode === null) {
+      this.latestPreviewId = existingId;
+      const previewUrl = `${publicBase(this.config)}/app-previews/${encodeURIComponent(existingId)}/`;
       return {
-        previewId,
+        previewId: existingId,
         title: projectName,
         previewUrl,
         localUrl: `http://127.0.0.1:${existing.port}/`,
@@ -266,6 +279,9 @@ export class AppPreviewManager {
         durationMs: Date.now() - startedAt,
       };
     }
+
+    const previewId = newPreviewId(projectName);
+    this.projectIndex.set(projectKey, previewId);
 
     let installed = false;
     let installExitCode: number | null = null;
@@ -305,6 +321,7 @@ export class AppPreviewManager {
     });
     const preview: PreviewProcess = {
       previewId,
+      projectKey,
       workspaceRoot,
       projectName,
       port,
@@ -321,6 +338,7 @@ export class AppPreviewManager {
     });
     child.on("exit", () => {
       if (this.previews.get(previewId)?.child === child) this.previews.delete(previewId);
+      if (this.projectIndex.get(projectKey) === previewId) this.projectIndex.delete(projectKey);
     });
     child.on("error", (err) => {
       preview.stderr = appendLog(preview.stderr, Buffer.from(err.message), this.config.shellMaxOutputBytes);
@@ -372,12 +390,38 @@ export class AppPreviewManager {
       res.status(404).type("text/plain").send("No active preview for /_next asset");
       return;
     }
-    await this.proxyTo(preview, req, res, `_next/${path}`);
+    // Confine the id-less /_next route to actual _next assets — block the
+    // ..%2f trick that would otherwise reach the app's /api/* routes.
+    await this.proxyTo(preview, req, res, `_next/${path}`, "/_next/");
   }
 
-  private async proxyTo(preview: PreviewProcess, req: Request, res: Response, path: string): Promise<void> {
+  private async proxyTo(
+    preview: PreviewProcess,
+    req: Request,
+    res: Response,
+    path: string,
+    confinePrefix?: string,
+  ): Promise<void> {
+    if (confinePrefix) {
+      // Reject parent traversal in encoded OR decoded form (defense in depth
+      // alongside the post-construction prefix check below).
+      let decoded = path;
+      try {
+        for (let i = 0; i < 3 && /%2e|%2f|%5c/i.test(decoded); i += 1) decoded = decodeURIComponent(decoded);
+      } catch {
+        /* malformed encoding — fall through to the segment check on the raw value */
+      }
+      if (decoded.split(/[\\/]/).some((s) => s === "..")) {
+        res.status(404).type("text/plain").send("Not found");
+        return;
+      }
+    }
     const upstreamPath = `/${path || ""}`;
     const upstreamUrl = new URL(upstreamPath, `http://127.0.0.1:${preview.port}`);
+    if (confinePrefix && !upstreamUrl.pathname.startsWith(confinePrefix)) {
+      res.status(404).type("text/plain").send("Not found");
+      return;
+    }
     const originalUrl = req.originalUrl.split("?")[1];
     if (originalUrl) upstreamUrl.search = originalUrl;
 

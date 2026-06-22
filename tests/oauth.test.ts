@@ -1,6 +1,6 @@
 import { it, expect, beforeAll, afterAll } from "vitest";
 import { createServer, type AddressInfo } from "node:net";
-import type { Server } from "node:http";
+import { request as httpRequest, type Server } from "node:http";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -278,12 +278,18 @@ it("rejects an auth code replay (single use)", async () => {
   expect(second.ok).toBe(false);
 });
 
-it("keeps refresh tokens stable for ChatGPT retries", async () => {
-  const client = await register("stable-refresh");
+it("rotates refresh tokens (a leaked old token stops working)", async () => {
+  const client = await register("rotate-refresh");
   const verifier = b64url(randomBytes(32));
   const challenge = b64url(createHash("sha256").update(verifier).digest());
   const code = await getCode(client.client_id, challenge);
   const as = await asMetadata();
+  const refreshOnce = (rt: string) =>
+    fetch(as.token_endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: rt, client_id: client.client_id }).toString(),
+    });
   const tok = (await (
     await fetch(as.token_endpoint, {
       method: "POST",
@@ -291,20 +297,12 @@ it("keeps refresh tokens stable for ChatGPT retries", async () => {
       body: new URLSearchParams({ grant_type: "authorization_code", code, redirect_uri: REDIRECT, client_id: client.client_id, code_verifier: verifier }).toString(),
     })
   ).json()) as Record<string, any>;
-  const r1 = await fetch(as.token_endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tok.refresh_token, client_id: client.client_id }).toString(),
-  });
-  const refreshed = (await r1.json()) as Record<string, any>;
+  const refreshed = (await (await refreshOnce(tok.refresh_token)).json()) as Record<string, any>;
   expect(refreshed.access_token).toBeTruthy();
-  expect(refreshed.refresh_token).toBe(tok.refresh_token);
-  const reuse = await fetch(as.token_endpoint, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tok.refresh_token, client_id: client.client_id }).toString(),
-  });
-  expect(reuse.ok).toBe(true);
+  expect(refreshed.refresh_token).toBeTruthy();
+  expect(refreshed.refresh_token).not.toBe(tok.refresh_token); // rotated
+  expect((await refreshOnce(refreshed.refresh_token)).ok).toBe(true); // the NEW one works
+  expect((await refreshOnce(tok.refresh_token)).ok).toBe(false); // the OLD one is dead
 });
 
 it("burns the login ticket after repeated wrong passwords", async () => {
@@ -326,6 +324,25 @@ it("burns the login ticket after repeated wrong passwords", async () => {
   // even the CORRECT password now fails — the ticket is dead
   const after = await tryLogin(OWNER);
   expect(after.status).not.toBe(302);
+});
+
+it("puts the site/preview routes behind the host guard (not public)", async () => {
+  const u = new URL(origin);
+  const rawGet = (path: string, host?: string): Promise<number | undefined> =>
+    new Promise((resolveStatus) => {
+      const req = httpRequest(
+        { hostname: u.hostname, port: u.port, path, method: "GET", ...(host ? { headers: { host } } : {}) },
+        (res) => {
+          res.resume();
+          resolveStatus(res.statusCode);
+        },
+      );
+      req.end();
+    });
+  // Forged Host (DNS-rebinding) is rejected by the guard...
+  expect(await rawGet("/sites/none", "evil.attacker.example")).toBe(403);
+  // ...while the correct host passes the guard and reaches the handler (404).
+  expect(await rawGet("/sites/none")).toBe(404);
 });
 
 it("rejects login with the wrong owner password", async () => {

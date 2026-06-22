@@ -76,9 +76,11 @@ function nxBinaryName(): string {
 
 async function localNxBinary(cwd: string): Promise<string> {
   const nxBin = await realpath(join(cwd, "node_modules", ".bin", nxBinaryName())).catch(() => null);
-  if (!nxBin) {
+  // Must resolve to a binary INSIDE the workspace — a symlinked nx pointing out
+  // of the sandbox would let an attacker run an arbitrary host binary.
+  if (!nxBin || !isInsideOrEqual(nxBin, cwd)) {
     throw new CreateAppError(
-      "Local Nx binary not found at node_modules/.bin/nx. Run your package manager install first; create_app will not download Nx with npx/bunx.",
+      "Local Nx binary not found (or it resolves outside the workspace). Run your package manager install first; create_app will not download Nx with npx/bunx.",
     );
   }
   return nxBin;

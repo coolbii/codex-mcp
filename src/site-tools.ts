@@ -571,11 +571,17 @@ export class SiteManager {
     if (filePath.split(/[\\/]/).some((part) => part === ".git" || part === "..")) {
       throw new SiteError("Refusing to serve hidden git data or parent traversal");
     }
+    if (/^([\\/]|[a-zA-Z]:)/.test(filePath)) {
+      throw new SiteError("Refusing an absolute file path");
+    }
 
     if (version) {
       await this.git(dir, ["cat-file", "-e", `${version}^{commit}`]);
       const tmpDir = join(this.baseDir, ".preview-cache", siteId, version);
       const target = resolve(tmpDir, filePath);
+      // Mirror the non-version branch: the write/serve target must stay inside
+      // the per-version cache dir.
+      if (!isInsideOrEqual(target, tmpDir)) throw new SiteError("Path escapes preview cache");
       await mkdir(resolve(target, ".."), { recursive: true });
       const { stdout } = await this.git(dir, ["show", `${version}:${filePath}`], { encoding: "buffer" });
       await writeFile(target, stdout as Buffer);
