@@ -17,7 +17,7 @@ import type { AppConfig } from "./config.js";
 import type { PathGuard } from "./path-guard.js";
 import { isInsideOrEqual } from "./path-util.js";
 import type { Workspace } from "./workspaces.js";
-import { detectPackageManager, type PackageManager } from "./package-tools.js";
+import { detectPackageManager, detectYarnMajor, type PackageManager } from "./package-tools.js";
 
 export interface StartAppPreviewInput {
   path: string;
@@ -127,14 +127,18 @@ async function readPackageName(cwd: string): Promise<string> {
   throw new AppPreviewError("package.json is missing a package name; pass projectName explicitly");
 }
 
-function installCommand(packageManager: PackageManager): { command: string; args: string[] } {
+function installCommand(packageManager: PackageManager, yarnMajor = 1): { command: string; args: string[] } {
   switch (packageManager) {
     case "npm":
       return { command: "npm", args: ["install", "--ignore-scripts", "--no-audit", "--no-fund"] };
     case "pnpm":
       return { command: "corepack", args: ["pnpm", "install", "--ignore-scripts"] };
     case "yarn":
-      return { command: "corepack", args: ["yarn", "install", "--mode=skip-build"] };
+      // classic (1.x) honors --ignore-scripts; berry (2+) errors on it and uses
+      // --mode=skip-build + YARN_ENABLE_SCRIPTS=false (env). Pick by version.
+      return yarnMajor >= 2
+        ? { command: "corepack", args: ["yarn", "install", "--mode=skip-build"] }
+        : { command: "corepack", args: ["yarn", "install", "--ignore-scripts"] };
     case "bun":
       return { command: "bun", args: ["install", "--ignore-scripts"] };
   }
@@ -294,7 +298,8 @@ export class AppPreviewManager {
       if (packageManager === "yarn" && !(await exists(join(workspaceRoot, "yarn.lock")))) {
         await writeFile(join(workspaceRoot, "yarn.lock"), "", { flag: "wx" }).catch(() => undefined);
       }
-      const install = installCommand(packageManager);
+      const yarnMajor = packageManager === "yarn" ? await detectYarnMajor(workspaceRoot) : 1;
+      const install = installCommand(packageManager, yarnMajor);
       const result = await runBuffered(install.command, install.args, workspaceRoot, timeoutMs, this.config.shellMaxOutputBytes);
       installed = true;
       installExitCode = result.exitCode;

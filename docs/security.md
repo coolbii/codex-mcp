@@ -247,12 +247,21 @@ such:
 - Generated sites/apps are written inside the sandbox (under the first allowed
   root) via the PathGuard.
 
-**Residual:** enabling these features trusts the workspace's npm dependencies
-(only *install* scripts are blocked, not the code that runs when the app runs).
-Keep them off unless the workspace is one you would run locally anyway. These
-were hardened after an adversarial review that found a public `/_next` open
-proxy, a yarn-path script-execution RCE, and a removed refresh-token rotation —
-all fixed; see the review notes / tests.
+Lifecycle-script suppression is **version-correct per manager** (npm/pnpm
+`--ignore-scripts`; yarn **classic** `--ignore-scripts` vs yarn **berry**
+`--mode=skip-build` + `YARN_ENABLE_SCRIPTS=false` — picking the wrong one was a
+real RCE, since the attacker controls the `packageManager: "yarn@…"` field).
+
+**Residuals (documented — accept the trust boundary):** enabling these features
+trusts the workspace's dependency setup. (a) Install scripts are blocked, but the
+code in installed packages still runs when the app runs. (b) A workspace `.npmrc`
+can still redirect the registry (project config outranks env/global) — so only
+enable `ENABLE_PACKAGE_INSTALL` on a workspace whose `.npmrc`/`package.json` you
+trust. (c) The id-less `/_next` route exposes the *latest* running preview's
+static client bundle (never `/api`, which is path-confined) to anyone with the
+tunnel host. Keep these features off unless the workspace is one you'd run
+locally anyway. Hardened across two adversarial-review rounds (public `/_next`
+open proxy, yarn-path RCE, removed refresh-token rotation, traversal — all fixed).
 
 ## Logging
 

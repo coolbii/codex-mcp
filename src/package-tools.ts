@@ -93,6 +93,25 @@ async function readPackageManagerField(cwd: string): Promise<PackageManager | nu
   return null;
 }
 
+/**
+ * Yarn major version from the (attacker-writable) packageManager field. Used to
+ * pick the correct script-suppression flag: classic (1.x) honors --ignore-scripts
+ * but ignores --mode=skip-build / YARN_ENABLE_SCRIPTS; berry (2+) is the inverse
+ * and ERRORS on --ignore-scripts. Defaults to 1 (corepack's default `yarn`).
+ */
+export async function detectYarnMajor(cwd: string): Promise<number> {
+  const raw = await readFile(join(cwd, "package.json"), "utf8").catch(() => null);
+  if (!raw) return 1;
+  try {
+    const data = JSON.parse(raw) as { packageManager?: unknown };
+    const v = typeof data.packageManager === "string" ? data.packageManager : "";
+    const m = /^yarn@(\d+)/.exec(v);
+    return m ? Number(m[1]) : 1;
+  } catch {
+    return 1;
+  }
+}
+
 export async function detectPackageManager(cwd: string): Promise<PackageManager> {
   const fromPackageJson = await readPackageManagerField(cwd);
   if (fromPackageJson) return fromPackageJson;
@@ -108,6 +127,7 @@ export function installArgs(
   packageManager: PackageManager,
   packages: string[],
   devDependency: boolean,
+  yarnMajor = 1,
 ): string[] {
   switch (packageManager) {
     case "npm":
@@ -115,7 +135,12 @@ export function installArgs(
     case "pnpm":
       return ["pnpm", "add", "--ignore-scripts", ...(devDependency ? ["-D"] : []), ...packages];
     case "yarn":
-      return ["yarn", "add", "--mode=skip-build", ...(devDependency ? ["--dev"] : []), ...packages];
+      // Classic (1.x) honors --ignore-scripts (and ignores --mode/env). Berry
+      // (2+) ERRORS on --ignore-scripts and instead needs --mode=skip-build plus
+      // YARN_ENABLE_SCRIPTS=false (set in scrubbedEnv). Pick by version.
+      return yarnMajor >= 2
+        ? ["yarn", "add", "--mode=skip-build", ...(devDependency ? ["--dev"] : []), ...packages]
+        : ["yarn", "add", "--ignore-scripts", ...(devDependency ? ["--dev"] : []), ...packages];
     case "bun":
       return ["add", "--ignore-scripts", ...(devDependency ? ["--dev"] : []), ...packages];
   }
@@ -143,9 +168,10 @@ function scrubbedEnv(): NodeJS.ProcessEnv {
     CI: "1",
     npm_config_fund: "false",
     npm_config_audit: "false",
-    // Disable install lifecycle scripts for EVERY manager regardless of the
-    // per-command flag (yarn classic ignores --mode=skip-build), and ignore the
-    // operator's global npmrc so an untrusted workspace can't inherit its secrets.
+    // Disable install lifecycle scripts. npm/pnpm honor npm_config_ignore_scripts;
+    // yarn berry honors YARN_ENABLE_SCRIPTS; yarn CLASSIC honors neither, so the
+    // per-command --ignore-scripts flag is selected by version in installArgs().
+    // Also ignore the operator's global npmrc.
     npm_config_ignore_scripts: "true",
     YARN_ENABLE_SCRIPTS: "false",
     npm_config_userconfig: devNull,
@@ -177,7 +203,8 @@ export async function installPackages(
 
   const packageManager = input.packageManager ?? await detectPackageManager(cwd);
   const command = packageManagerCommand(packageManager);
-  const args = installArgs(packageManager, packages, input.devDependency ?? false);
+  const yarnMajor = packageManager === "yarn" ? await detectYarnMajor(cwd) : 1;
+  const args = installArgs(packageManager, packages, input.devDependency ?? false, yarnMajor);
   const startedAt = Date.now();
 
   return await new Promise<InstallPackagesResult>((resolveResult, reject) => {

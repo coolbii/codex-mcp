@@ -48,8 +48,21 @@ it("detects package manager from packageManager field before lockfiles", async (
 it("builds install args with scripts disabled", () => {
   expect(installArgs("npm", ["react"], false)).toEqual(["install", "--ignore-scripts", "--save", "react"]);
   expect(installArgs("pnpm", ["vitest"], true)).toEqual(["pnpm", "add", "--ignore-scripts", "-D", "vitest"]);
-  expect(installArgs("yarn", ["@types/node"], true)).toEqual(["yarn", "add", "--mode=skip-build", "--dev", "@types/node"]);
   expect(installArgs("bun", ["lucide-react"], false)).toEqual(["add", "--ignore-scripts", "lucide-react"]);
+});
+
+it("uses the version-correct yarn script-suppression flag", () => {
+  // yarn classic (default / 1.x) honors --ignore-scripts; berry (2+) errors on it
+  // and uses --mode=skip-build instead. Picking the wrong one was a real RCE.
+  expect(installArgs("yarn", ["@types/node"], true, 1)).toEqual([
+    "yarn", "add", "--ignore-scripts", "--dev", "@types/node",
+  ]);
+  expect(installArgs("yarn", ["@types/node"], true)).toEqual([
+    "yarn", "add", "--ignore-scripts", "--dev", "@types/node",
+  ]); // default = classic
+  expect(installArgs("yarn", ["@types/node"], true, 4)).toEqual([
+    "yarn", "add", "--mode=skip-build", "--dev", "@types/node",
+  ]);
 });
 
 it("refuses when package installation is disabled", async () => {
