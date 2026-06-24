@@ -11,7 +11,7 @@ import { PathGuard } from "./path-guard.js";
 import { buildMcpServer } from "./mcp-server.js";
 
 export async function startStdio(config: AppConfig): Promise<void> {
-  const guard = new PathGuard(config.allowedRoots);
+  const guard = new PathGuard(config.allowedRoots, config.readonlyRoots);
   const server = buildMcpServer(config, guard);
   const transport = new StdioServerTransport();
   await server.connect(transport);

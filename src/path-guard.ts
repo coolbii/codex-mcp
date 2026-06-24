@@ -61,12 +61,16 @@ function assertNotGitConfigWrite(baseDir: string, target: string): void {
 export class PathGuard {
   /** Allowed roots, already realpath-resolved by config. */
   private readonly roots: readonly string[];
+  /** Subset of (or paths inside) allowed roots that are readable but NOT
+   *  writable. Used to expose e.g. a live trading bot's source read-only. */
+  private readonly readonlyRoots: readonly string[];
 
-  constructor(realAllowedRoots: readonly string[]) {
+  constructor(realAllowedRoots: readonly string[], realReadonlyRoots: readonly string[] = []) {
     if (realAllowedRoots.length === 0) {
       throw new Error("PathGuard requires at least one allowed root");
     }
     this.roots = realAllowedRoots;
+    this.readonlyRoots = realReadonlyRoots;
   }
 
   /** Is this real (symlink-resolved) path inside any configured allowed root? */
@@ -74,9 +78,23 @@ export class PathGuard {
     return this.roots.some((root) => isInsideOrEqual(realPath, root));
   }
 
+  /** Is this real path inside a read-only root (writes must be refused)? */
+  isReadonly(realPath: string): boolean {
+    return this.readonlyRoots.some((root) => isInsideOrEqual(realPath, root));
+  }
+
   private assertWithinRoots(realPath: string): void {
     if (!this.isWithinAllowedRoots(realPath)) {
       throw new AccessDeniedError(`Path is outside the allowed roots: ${realPath}`);
+    }
+  }
+
+  private assertNotReadonly(realPath: string): void {
+    if (this.isReadonly(realPath)) {
+      throw new AccessDeniedError(
+        `This location is read-only (READONLY_ROOTS): ${realPath}. ` +
+          `Propose the change to the user instead of writing it.`,
+      );
     }
   }
 
@@ -130,6 +148,7 @@ export class PathGuard {
       throw new AccessDeniedError(`Write target escapes the workspace: ${inputPath}`);
     }
     this.assertWithinRoots(realParent);
+    this.assertNotReadonly(realParent);
 
     // If the target itself already exists and is a symlink, its destination
     // must also be contained — otherwise an attacker-planted symlink would let

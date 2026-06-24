@@ -16,6 +16,7 @@ function cfg(over: Partial<AppConfig>): AppConfig {
     allowedRoots: [],
     rawAllowedRoots: [],
     projectsRoot: null,
+    readonlyRoots: [],
     denyPaths: [],
     secretScan: true,
     requireAuth: false,

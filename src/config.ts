@@ -51,6 +51,10 @@ export interface AppConfig {
    */
   projectsRoot: string | null;
 
+  /** Readable-but-not-writable roots (inside allowedRoots). Writes under these
+   *  are refused — e.g. a live trading bot's source exposed for read-only review. */
+  readonlyRoots: string[];
+
   /** When true, /mcp requires a valid bearer token. */
   requireAuth: boolean;
   /** Bearer token. Generated + flagged if the operator did not supply one. */
@@ -296,8 +300,11 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
   // the SAME gate as allowed roots and is implicitly added to them, so the
   // path guard and per-folder git confinement both permit it.
   const rawProjectsRoot = (env.PROJECTS_ROOT ?? "").trim();
+  // READONLY_ROOTS: readable-but-not-writable paths (e.g. a live bot's source).
+  // Validated through the same gate and must resolve inside an allowed root.
+  const rawReadonlyRoots = csv(env.READONLY_ROOTS);
   const allowedRoots = validateAllowedRoots(
-    rawProjectsRoot ? [...rawAllowedRoots, rawProjectsRoot] : rawAllowedRoots,
+    [...rawAllowedRoots, ...(rawProjectsRoot ? [rawProjectsRoot] : []), ...rawReadonlyRoots],
     warn,
   );
   let projectsRoot: string | null = null;
@@ -309,6 +316,12 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
       );
     }
     projectsRoot = realProjectsRoot;
+  }
+  const readonlyRoots = rawReadonlyRoots.map((r) => realpathSafe(resolve(expandHome(r))));
+  for (const rr of readonlyRoots) {
+    if (!allowedRoots.some((r) => isInsideOrEqual(rr, r))) {
+      throw new ConfigError(`READONLY_ROOTS must resolve inside an allowed root: ${rr}`);
+    }
   }
 
   const host = (env.HOST ?? "127.0.0.1").trim();
@@ -459,6 +472,7 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
     allowedRoots,
     rawAllowedRoots,
     projectsRoot,
+    readonlyRoots,
     requireAuth,
     ownerToken,
     ownerTokenGenerated,

@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { join } from "node:path";
 import { writeFile, mkdir, symlink } from "node:fs/promises";
 import { makeFixture, type Fixture } from "./helpers.js";
-import { AccessDeniedError } from "../src/path-guard.js";
+import { AccessDeniedError, PathGuard } from "../src/path-guard.js";
 import { CASE_INSENSITIVE_FS } from "../src/path-util.js";
 
 let fx: Fixture;
@@ -142,5 +142,29 @@ describe("PathGuard — git config write denial (RCE defense)", () => {
     fx = await makeFixture();
     const target = await fx.guard.resolveForWrite(fx.root, "ok.txt");
     expect(target).toBe(join(fx.root, "ok.txt"));
+  });
+});
+
+describe("PathGuard — READONLY_ROOTS (read-only roots)", () => {
+  it("reads from a read-only root but refuses writes there", async () => {
+    fx = await makeFixture();
+    await mkdir(join(fx.root, "ro"), { recursive: true });
+    await writeFile(join(fx.root, "ro", "strategy.py"), "print('hi')");
+    // Guard where <root>/ro is read-only.
+    const guard = new PathGuard([fx.root], [join(fx.root, "ro")]);
+
+    // Reads still work.
+    const real = await guard.resolveForRead(fx.root, "ro/strategy.py");
+    expect(real).toBe(join(fx.root, "ro", "strategy.py"));
+
+    // Writes under the read-only root are refused...
+    await expect(guard.resolveForWrite(fx.root, "ro/strategy.py")).rejects.toBeInstanceOf(
+      AccessDeniedError,
+    );
+    await expect(guard.resolveForWrite(fx.root, "ro/new.py")).rejects.toThrow(/read-only/i);
+
+    // ...but writes elsewhere in the workspace are fine.
+    const ok = await guard.resolveForWrite(fx.root, "scratch.txt");
+    expect(ok).toBe(join(fx.root, "scratch.txt"));
   });
 });

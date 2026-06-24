@@ -197,7 +197,7 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
 }
 
 export function startHttp(config: AppConfig): Promise<Server> {
-  const guard = new PathGuard(config.allowedRoots);
+  const guard = new PathGuard(config.allowedRoots, config.readonlyRoots);
   const app = makeApp(config, guard);
   const appPreviewManager = app.locals.appPreviewManager as AppPreviewManager | undefined;
 
@@ -206,6 +206,9 @@ export function startHttp(config: AppConfig): Promise<Server> {
       const where = `http://${config.host}:${config.port}/mcp`;
       process.stderr.write(`\n[devspace] Streamable HTTP MCP listening on ${where}\n`);
       process.stderr.write(`[devspace] allowed roots:\n${config.allowedRoots.map((r) => `  - ${r}`).join("\n")}\n`);
+      if (config.readonlyRoots.length) {
+        process.stderr.write(`[devspace] read-only roots:\n${config.readonlyRoots.map((r) => `  - ${r}`).join("\n")}\n`);
+      }
       const authDesc = !config.requireAuth
         ? "DISABLED (loopback opt-out)"
         : config.authMode === "oauth"
