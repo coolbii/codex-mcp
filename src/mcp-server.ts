@@ -436,6 +436,9 @@ export function buildMcpServer(
           ...(offset !== undefined ? { offset } : {}),
           ...(limit !== undefined ? { limit } : {}),
         });
+        // Re-check on the RESOLVED relative path: an innocuous name that
+        // symlinks/resolves to a credential file must still be blocked.
+        if (secretGuard.isSecretPath(r.path)) return errorResult(secretGuard.blockMessage(r.path));
         const header =
           `# ${r.path} (${r.bytes} bytes${r.truncated ? ", truncated" : ""}` +
           (r.returnedLines !== undefined ? `, lines ${offset ?? 1}..` : "") +
@@ -474,8 +477,13 @@ export function buildMcpServer(
       invoke("list_directory", { workspaceId, path: path ?? "." }, async () => {
         const ws = registry.get(workspaceId);
         const r = await listDirectory(guard, ws, path ?? ".");
+        const dir = path && path !== "." ? path.replace(/\/+$/, "") + "/" : "";
         const body = r.entries
-          .map((e) => `${e.type === "directory" ? "📁" : e.type === "symlink" ? "🔗" : "  "} ${e.name}`)
+          .map((e) => {
+            const icon = e.type === "directory" ? "📁" : e.type === "symlink" ? "🔗" : "  ";
+            const locked = secretGuard.isSecretPath(dir + e.name) ? " 🔒 (secret — read blocked)" : "";
+            return `${icon} ${e.name}${locked}`;
+          })
           .join("\n");
         return text(`# ${r.path}${r.truncated ? " (truncated)" : ""}\n${body}`, {
           path: r.path,
@@ -831,9 +839,13 @@ export function buildMcpServer(
     },
     async ({ workspaceId, path, content }) =>
       invoke("show_diff", { workspaceId, path }, async () => {
+        // show_diff reads the existing file into a diff — gate it like read_file
+        // so it can't be used to exfiltrate a credential file's contents.
+        if (secretGuard.isSecretPath(path)) return errorResult(secretGuard.blockMessage(path));
         const ws = registry.get(workspaceId);
         const r = await showDiff(guard, ws, path, content);
-        return text(`# diff for ${r.path} (${r.exists ? "modify" : "create"})\n${r.diff}`, {
+        if (secretGuard.isSecretPath(r.path)) return errorResult(secretGuard.blockMessage(r.path));
+        return text(`# diff for ${r.path} (${r.exists ? "modify" : "create"})\n${secretGuard.redact(r.diff).text}`, {
           path: r.path,
           exists: r.exists,
         });

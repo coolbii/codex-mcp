@@ -547,6 +547,14 @@ export class SiteManager {
     if (!this.guard.isWithinAllowedRoots(realBase)) {
       throw new SiteError(`Site base is outside allowed roots: ${this.baseDir}`);
     }
+    // Site/project creation writes directly (not via resolveForWrite), so it
+    // must independently refuse a base inside a read-only root — otherwise a
+    // read-only deployment could still be written to here.
+    if (this.guard.isReadonly(realBase)) {
+      throw new SiteError(
+        `Projects base is inside a read-only root: ${this.baseDir}. Set PROJECTS_ROOT to a writable location.`,
+      );
+    }
   }
 
   async createSite(input: {

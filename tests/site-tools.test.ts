@@ -3,6 +3,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { loadConfig } from "../src/config.js";
 import { SiteManager } from "../src/site-tools.js";
+import { PathGuard } from "../src/path-guard.js";
 import { CASE_INSENSITIVE_FS } from "../src/path-util.js";
 import { makeFixture, type Fixture } from "./helpers.js";
 
@@ -274,6 +275,28 @@ it("404s reserved/meta/git-config files on the serve path", async () => {
   const p = await sites.createProject({ title: "Serve", files: [{ path: "index.html", content: "ok" }] });
   await expect(sites.previewFile(p.siteId, ".devspace-site.json")).rejects.toThrow(/reserved|git/i);
   await expect(sites.previewFile(p.siteId, ".gitattributes")).rejects.toThrow(/reserved|git/i);
+});
+
+it("refuses to create a project when the projects base is read-only", async () => {
+  fx = await makeFixture();
+  const projectsRoot = join(fx.root, "ro-projects");
+  await mkdir(projectsRoot, { recursive: true });
+  const cfg = loadConfig({
+    transport: "http",
+    env: {
+      ALLOWED_ROOTS: fx.root,
+      PROJECTS_ROOT: projectsRoot,
+      READONLY_ROOTS: projectsRoot, // the projects base itself is read-only
+      OWNER_TOKEN: "x".repeat(40),
+      PUBLIC_BASE_URL: "https://devspace.example.test",
+    },
+    warn: silent,
+  });
+  const guard = new PathGuard(cfg.allowedRoots, cfg.readonlyRoots);
+  const sites = new SiteManager(cfg, guard);
+  await expect(
+    sites.createProject({ title: "X", files: [{ path: "index.html", content: "x" }] }),
+  ).rejects.toThrow(/read-only/i);
 });
 
 it("marks commit-hash versions immutable but hex-shaped tags movable", async () => {

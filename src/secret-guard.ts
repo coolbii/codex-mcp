@@ -43,6 +43,7 @@ const BUILTIN_NAME_PATTERNS: RegExp[] = [
   /(^|\/)(service-account|gcloud-key|serviceaccount)[^/]*\.json$/i,
   /(^|[._/-])credentials([._-][^/]*)?$/i, // credentials, aws-credentials, credentials.json
   /(^|[._/-])secrets?([._-][^/]*)?$/i, // secret, secrets.yml, app-secret.txt
+  /(^|\/)(secrets?|credentials)\//i, // ANY file under a secrets/ or credentials/ dir
   // Agent / tool credential + state stores (claude/codex/gemini/docker/...).
   /(^|\/)\.ccb\//i,
   /(^|\/)\.docker\//i,
@@ -55,7 +56,9 @@ const BUILTIN_NAME_PATTERNS: RegExp[] = [
 // --- layer 2: content signatures -------------------------------------------
 
 const CONTENT_PATTERNS: { re: RegExp; label: string }[] = [
-  { re: /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g, label: "private-key" },
+  // Whole PEM block, so the key BODY (not just the BEGIN marker) is redacted.
+  { re: /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g, label: "private-key" },
+  { re: /-----BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-----/g, label: "private-key" }, // unterminated tail
   { re: /\bA(?:KIA|SIA|GPA|IDA|ROA|IPA|NPA|NVA)[0-9A-Z]{16}\b/g, label: "aws-key" },
   { re: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, label: "github-token" },
   { re: /\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, label: "github-pat" },
@@ -67,8 +70,20 @@ const CONTENT_PATTERNS: { re: RegExp; label: string }[] = [
 ];
 
 // Secret-ish assignment: NAME = value, where NAME looks like a credential.
-const ASSIGNMENT_PATTERN =
-  /\b([A-Za-z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|APIKEY|API_KEY|ACCESS_KEY|PRIVATE_KEY|CLIENT_SECRET|AUTH)[A-Za-z0-9_]*)\s*([:=])\s*(['"]?)([^\s'"#]{6,})\3/gi;
+// Covers env (KEY=val), yaml (key: val) and JSON ("apiSecret": "val") shapes.
+const SECRET_KEY =
+  "(?:secret|token|password|passwd|passphrase|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|webhook|auth)";
+// Quoted value (JSON/YAML): "apiSecret": "value with spaces". Does not require
+// the value to be short or space-free; capture group 3 is the secret value.
+const ASSIGNMENT_QUOTED = new RegExp(
+  `(["']?[\\w.-]*${SECRET_KEY}[\\w.-]*["']?\\s*[:=]\\s*)(["'])([^"'\\r\\n]{4,})\\2`,
+  "gi",
+);
+// Unquoted value (env/shell): API_KEY=longvalue. Stops at whitespace/#/quote.
+const ASSIGNMENT_UNQUOTED = new RegExp(
+  `(\\b[\\w.-]*${SECRET_KEY}[\\w.-]*\\s*[:=]\\s*)([^\\s"'#]{6,})`,
+  "gi",
+);
 
 const REGEX_SPECIAL = /[.+^${}()|[\]\\]/;
 
@@ -111,9 +126,17 @@ export class SecretGuard {
     this.scanContent = opts.scanContent ?? true;
   }
 
-  /** True if this workspace-relative path is a credential file we must not read. */
+  /** True if this workspace-relative path is a credential file we must not read.
+   *  Normalises per segment (NFC + strip trailing dots/spaces) so Windows-style
+   *  aliases like ".env " / ".env." cannot evade the match (case is handled by
+   *  the /i flag on every pattern). */
   isSecretPath(relPath: string): boolean {
-    const p = relPath.replace(/\\/g, "/");
+    const p = relPath
+      .replace(/\\/g, "/")
+      .normalize("NFC")
+      .split("/")
+      .map((s) => s.replace(/[ .]+$/, ""))
+      .join("/");
     return this.namePatterns.some((re) => re.test(p));
   }
 
@@ -139,9 +162,13 @@ export class SecretGuard {
         return `[redacted:${label}]`;
       });
     }
-    out = out.replace(ASSIGNMENT_PATTERN, (_m, name: string, op: string, q: string) => {
+    out = out.replace(ASSIGNMENT_QUOTED, (_m, pre: string, q: string) => {
       count++;
-      return `${name}${op}${q}[redacted:secret]${q}`;
+      return `${pre}${q}[redacted:secret]${q}`;
+    });
+    out = out.replace(ASSIGNMENT_UNQUOTED, (_m, pre: string) => {
+      count++;
+      return `${pre}[redacted:secret]`;
     });
     return { text: out, redactions: count };
   }

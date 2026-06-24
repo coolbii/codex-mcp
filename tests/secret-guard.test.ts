@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { SecretGuard } from "../src/secret-guard.js";
-import { findFiles } from "../src/search-tools.js";
+import { findFiles, searchFiles } from "../src/search-tools.js";
 import { makeFixture, type Fixture } from "./helpers.js";
 
 let fx: Fixture;
@@ -28,6 +28,10 @@ it("flags credential file paths and leaves normal files alone", () => {
     ".gemini/oauth_creds.json",
     "data/devspace-oauth.json",
     "okx-bot/secrets/mtls/cert.p12",
+    "secrets/okx-keys.json", // file UNDER a secrets/ dir (Codex finding 3)
+    "config/credentials/app.conf",
+    ".env ", // trailing space (Windows alias, Codex finding 6)
+    ".env.", // trailing dot
   ]) {
     expect(g.isSecretPath(p), p).toBe(true);
   }
@@ -69,6 +73,31 @@ it("redacts high-confidence secrets and secret-ish assignments", () => {
   expect(assign.redactions).toBeGreaterThan(0);
   expect(assign.text).toContain("API_KEY=");
   expect(assign.text).not.toContain("supersecretvalue123");
+
+  // PEM BODY (not just the BEGIN marker) must be redacted.
+  const pem = g.redact("a\n-----BEGIN OPENSSH PRIVATE KEY-----\nAAAAB3NzaSECRETBODY\nmoremoremore\n-----END OPENSSH PRIVATE KEY-----\nb");
+  expect(pem.text).not.toContain("AAAAB3NzaSECRETBODY");
+  expect(pem.text).not.toContain("moremoremore");
+
+  // Quoted JSON secret and PASSPHRASE keyword.
+  expect(g.redact('{"apiSecret": "abcd1234efgh5678"}').text).not.toContain("abcd1234efgh5678");
+  expect(g.redact("DB_PASSPHRASE=my-super-secret-pass").text).not.toContain("my-super-secret-pass");
+});
+
+it("redacts a long secret in search results BEFORE clipping the line", async () => {
+  fx = await makeFixture();
+  const longval = "x".repeat(500);
+  await writeFile(join(fx.root, "conf.txt"), `API_KEY=${longval}\n`, "utf8");
+  const g = new SecretGuard();
+  const r = await searchFiles(fx.guard, fx.ws, {
+    query: "API_KEY",
+    maxResults: 10,
+    maxFileBytes: 1_000_000,
+    redactLine: (line) => g.redact(line).text,
+  });
+  expect(r.matches.length).toBeGreaterThan(0);
+  expect(r.matches[0]!.line).toContain("[redacted");
+  expect(r.matches[0]!.line).not.toContain("xxxxxxxxxxxxxxxxxxxx"); // no secret tail survived
 });
 
 it("leaves ordinary content untouched and respects scanContent=false", () => {

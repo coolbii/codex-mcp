@@ -258,11 +258,14 @@ export async function searchFiles(
       const line = lines[i] ?? "";
       const probe = line.length > MAX_MATCH_LINE ? line.slice(0, MAX_MATCH_LINE) : line;
       if (matcher(probe)) {
-        const clipped = line.length > 400 ? line.slice(0, 400) + "…" : line;
+        // Redact the FULL line BEFORE clipping, so a long secret value cannot
+        // have its tail survive past the 400-char clip.
+        const redacted = opts.redactLine ? opts.redactLine(line) : line;
+        const out = redacted.length > 400 ? redacted.slice(0, 400) + "…" : redacted;
         matches.push({
           file: relative(ws.root, real) || relPath,
           lineNumber: i + 1,
-          line: opts.redactLine ? opts.redactLine(clipped) : clipped,
+          line: out,
         });
         if (matches.length >= opts.maxResults) {
           truncated = true;
