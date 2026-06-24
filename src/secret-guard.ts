@@ -43,6 +43,13 @@ const BUILTIN_NAME_PATTERNS: RegExp[] = [
   /(^|\/)(service-account|gcloud-key|serviceaccount)[^/]*\.json$/i,
   /(^|[._/-])credentials([._-][^/]*)?$/i, // credentials, aws-credentials, credentials.json
   /(^|[._/-])secrets?([._-][^/]*)?$/i, // secret, secrets.yml, app-secret.txt
+  // Agent / tool credential + state stores (claude/codex/gemini/docker/...).
+  /(^|\/)\.ccb\//i,
+  /(^|\/)\.docker\//i,
+  /(^|\/)\.gemini\//i,
+  /(^|\/)\.codex\//i,
+  /(^|\/)\.config\/gcloud\//i,
+  /(^|\/)[a-z0-9_.-]*oauth[a-z0-9_.-]*\.json$/i, // devspace-oauth.json, oauth_creds.json
 ];
 
 // --- layer 2: content signatures -------------------------------------------
@@ -71,13 +78,18 @@ function globToRegExp(glob: string): RegExp {
   let out = "";
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i] as string;
-    if (c === "*") {
-      if (glob[i + 1] === "*") {
-        out += ".*";
-        i++;
+    if (c === "*" && glob[i + 1] === "*") {
+      // Globstar. "**/" matches zero or more leading path segments, so
+      // "**/secrets/**" also matches a top-level "secrets/...".
+      if (glob[i + 2] === "/") {
+        out += "(?:.*/)?";
+        i += 2;
       } else {
-        out += "[^/]*";
+        out += ".*";
+        i += 1;
       }
+    } else if (c === "*") {
+      out += "[^/]*";
     } else if (c === "?") {
       out += ".";
     } else if (REGEX_SPECIAL.test(c)) {

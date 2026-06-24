@@ -23,6 +23,11 @@ it("flags credential file paths and leaves normal files alone", () => {
     ".aws/credentials",
     ".npmrc",
     ".git-credentials",
+    ".ccb/agents/codex/state.json",
+    ".docker/config.json",
+    ".gemini/oauth_creds.json",
+    "data/devspace-oauth.json",
+    "okx-bot/secrets/mtls/cert.p12",
   ]) {
     expect(g.isSecretPath(p), p).toBe(true);
   }
@@ -31,10 +36,13 @@ it("flags credential file paths and leaves normal files alone", () => {
   }
 });
 
-it("honors extra DENY_PATHS glob patterns", () => {
-  const g = new SecretGuard({ extraDenyPatterns: ["**/private/**", "*.token"] });
+it("honors extra DENY_PATHS glob patterns including **/ at any depth", () => {
+  const g = new SecretGuard({ extraDenyPatterns: ["**/private/**", "*.token", "**/vault/**"] });
   expect(g.isSecretPath("src/private/notes.md")).toBe(true);
   expect(g.isSecretPath("session.token")).toBe(true);
+  // "**/vault/**" must also match a top-level "vault/..." (zero leading dirs).
+  expect(g.isSecretPath("vault/key.txt")).toBe(true);
+  expect(g.isSecretPath("a/b/vault/key.txt")).toBe(true);
   expect(g.isSecretPath("src/public/notes.md")).toBe(false);
 });
 
