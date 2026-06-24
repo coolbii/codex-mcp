@@ -26,6 +26,7 @@ import { createApp } from "./app-tools.js";
 import { AppPreviewManager } from "./app-preview-tools.js";
 import { audit } from "./audit-log.js";
 import { SiteManager, SITE_ARCHETYPES } from "./site-tools.js";
+import { SecretGuard } from "./secret-guard.js";
 
 const SERVER_NAME = "devspace";
 const SERVER_VERSION = "0.1.0";
@@ -35,7 +36,14 @@ const SITE_WIDGET_URI_ALIASES = [
   "ui://devspace/site-preview.v2.html",
   "ui://devspace/site-preview.html",
 ] as const;
-const SITE_WIDGET_MIME = "text/html;profile=mcp-app";
+// ChatGPT's Apps SDK ("skybridge") host only MOUNTS a component whose resource
+// is served as exactly this MIME. The newer MCP ext-apps profile MIME
+// ("text/html;profile=mcp-app") is NOT recognised by today's skybridge host and
+// makes ChatGPT show "error loading app" / fall back to text. Both the resource
+// descriptor (registerResource) and the resources/read contents[] derive from
+// this one constant, so they always match. (Ref: openai/openai-apps-sdk-examples
+// pizzaz + kitchen_sink servers, which hardcode this everywhere.)
+const SITE_WIDGET_MIME = "text/html+skybridge";
 const SITE_DESIGN_DIRECTION =
   "Generated sites should feel hand-designed, restrained, and domain-specific. " +
   "Avoid generic AI SaaS styling: no decorative gradient blobs/orbs, no fake dashboard screenshots, " +
@@ -58,6 +66,11 @@ const siteVersionSchema = z.object({
   message: z.string(),
   createdAt: z.string(),
 });
+const siteTagSchema = z.object({
+  tag: z.string(),
+  version: z.string(),
+  createdAt: z.string(),
+});
 const siteSummarySchema = z.object({
   siteId: z.string(),
   title: z.string(),
@@ -70,6 +83,7 @@ const siteSummarySchema = z.object({
 const siteDetailsSchema = siteSummarySchema.extend({
   localPath: z.string(),
   versions: z.array(siteVersionSchema),
+  tags: z.array(siteTagSchema),
 });
 const appPreviewSchema = z.object({
   previewId: z.string(),
@@ -209,6 +223,7 @@ function siteWidgetHtml(): string {
         const globals = event.detail?.globals || {};
         if (globals.toolOutput !== undefined) latestOutput = globals.toolOutput;
         render();
+      });
     </script>
   </body>
 </html>`;
@@ -231,7 +246,16 @@ export function buildMcpServer(
         "list_directory / find_files / search_files before read_file. To change a " +
         "file, preview with show_diff, then write_file (new/overwrite) or edit_file " +
         "(exact oldText→newText replacement). All paths are workspace-relative. " +
-        "For create_site and update_site: " +
+        "SAFETY RULES (always follow): Never read, search, or display secret/credential " +
+        "files — .env / .env.*, *.key, *.pem, id_rsa*, .npmrc, .netrc, tokens, anything " +
+        "under .ssh / .aws / .gnupg, or files named like 'secret'/'credentials'. If a value " +
+        "is needed, ask the user to paste just that value. If a tool result says a path is " +
+        "BLOCKED or shows [redacted], do NOT try to work around it (no alternate paths, " +
+        "encodings, or version tricks) — tell the user. Writes: only create or modify files " +
+        "the current request needs; never delete or overwrite a file you did not create in " +
+        "this conversation without first showing show_diff and getting explicit confirmation; " +
+        "never write outside the workspace you were given. " +
+        "For create_site / create_project and their updates: " +
         SITE_DESIGN_DIRECTION,
     },
   );
@@ -271,6 +295,7 @@ export function buildMcpServer(
 
   const RO = { readOnlyHint: true, openWorldHint: false } as const;
   const WRITE = { readOnlyHint: false, destructiveHint: true, openWorldHint: false } as const;
+  const secretGuard = new SecretGuard({ extraDenyPatterns: config.denyPaths, scanContent: config.secretScan });
   const siteManager = new SiteManager(config, guard);
   const widgetOrigin = config.publicBaseUrl ?? `http://${config.host}:${config.port}`;
   const widgetMeta = {
@@ -384,7 +409,10 @@ export function buildMcpServer(
     "read_file",
     {
       title: "Read file",
-      description: "Read a UTF-8 text file inside a workspace. Optionally a line range.",
+      description:
+        "Read a UTF-8 text file inside a workspace. Optionally a line range. " +
+        "⚠ Do not open secret/credential files (.env, *.key, *.pem, tokens, credentials); " +
+        "if a read is blocked or content is [redacted], stop and ask the user for the value.",
       inputSchema: {
         workspaceId: z.string(),
         path: z.string().describe("workspace-relative file path"),
@@ -400,6 +428,8 @@ export function buildMcpServer(
     },
     async ({ workspaceId, path, offset, limit }) =>
       invoke("read_file", { workspaceId, path }, async () => {
+        // Credential files are off-limits even inside an allowed root.
+        if (secretGuard.isSecretPath(path)) return errorResult(secretGuard.blockMessage(path));
         const ws = registry.get(workspaceId);
         const r = await readFile(guard, ws, path, {
           maxBytes: config.maxReadBytes,
@@ -410,7 +440,13 @@ export function buildMcpServer(
           `# ${r.path} (${r.bytes} bytes${r.truncated ? ", truncated" : ""}` +
           (r.returnedLines !== undefined ? `, lines ${offset ?? 1}..` : "") +
           `)\n`;
-        return text(r.notice ? `${header}${r.notice}` : `${header}\n${r.text}`, {
+        if (r.notice) {
+          return text(`${header}${r.notice}`, { path: r.path, bytes: r.bytes, truncated: r.truncated });
+        }
+        // Best-effort redaction of any secret-looking content we do return.
+        const { text: body, redactions } = secretGuard.redact(r.text);
+        const note = redactions ? `\n\n[devspace: ${redactions} secret value(s) redacted from this file]` : "";
+        return text(`${header}\n${body}${note}`, {
           path: r.path,
           bytes: r.bytes,
           truncated: r.truncated,
@@ -476,6 +512,7 @@ export function buildMcpServer(
           ...(maxResults !== undefined ? { maxResults } : {}),
           ...(includeDotfiles !== undefined ? { includeDotfiles } : {}),
           ...(respectGitignore !== undefined ? { respectGitignore } : {}),
+          excludePath: (rel) => secretGuard.isSecretPath(rel),
         });
         return text(
           `${r.files.length} file(s)${r.truncated ? " (truncated)" : ""}\n${r.files.join("\n")}`,
@@ -489,7 +526,8 @@ export function buildMcpServer(
     {
       title: "Search file contents",
       description:
-        "Search file contents (literal substring by default; set isRegex for a regex). Returns file:line matches.",
+        "Search file contents (literal substring by default; set isRegex for a regex). Returns file:line matches. " +
+        "Secret/credential files are excluded and secret-looking values are [redacted] — do not try to recover them.",
       inputSchema: {
         workspaceId: z.string(),
         query: z.string(),
@@ -515,6 +553,8 @@ export function buildMcpServer(
           ...(glob !== undefined ? { glob } : {}),
           ...(isRegex !== undefined ? { isRegex } : {}),
           ...(caseSensitive !== undefined ? { caseSensitive } : {}),
+          excludePath: (rel) => secretGuard.isSecretPath(rel),
+          redactLine: (line) => secretGuard.redact(line).text,
         });
         const body = r.matches.map((m) => `${m.file}:${m.lineNumber}: ${m.line}`).join("\n");
         return text(
@@ -634,22 +674,143 @@ export function buildMcpServer(
         previewUrl: z.string(),
         latestVersion: z.string().nullable(),
         versions: z.array(siteVersionSchema),
+        tags: z.array(siteTagSchema),
       },
       annotations: { ...RO, title: "Get site versions" },
     },
     async ({ siteId }) =>
       invoke("get_site_versions", { path: `devspace-sites/${siteId}` }, async () => {
         const site = await siteManager.getSite(siteId);
-        const body = site.versions.length
+        const verBody = site.versions.length
           ? site.versions.map((v) => `${v.version.slice(0, 7)}  ${v.createdAt}  ${v.message}`).join("\n")
           : "(no versions)";
-        return text(body, {
+        const tagBody = site.tags.length
+          ? "\n\nTags:\n" + site.tags.map((t) => `${t.tag} → ${t.version.slice(0, 7)}`).join("\n")
+          : "";
+        return text(verBody + tagBody, {
           siteId: site.siteId,
           title: site.title,
           previewUrl: site.previewUrl,
           latestVersion: site.latestVersion,
           versions: site.versions,
+          tags: site.tags,
         });
+      }),
+  );
+
+  // --- multi-file static projects (git-versioned, taggable) ----------------
+
+  const projectFileSchema = z.object({
+    path: z.string().min(1).max(400).describe("Project-relative path, e.g. index.html or pages/about.html"),
+    content: z.string().describe("Full UTF-8 text content (pure static html/css/js/json/svg — no build runs)."),
+  });
+
+  server.registerTool(
+    "create_project",
+    {
+      title: "Create static project",
+      description:
+        "Use this when the user wants a multi-file static website/project (multiple HTML pages, CSS, JS, assets). " +
+        "Writes an arbitrary set of pure-static text files into a new local folder that is its own git repo, commits the " +
+        "first version, and returns a preview URL rendered in ChatGPT. No build/install ever runs. " +
+        SITE_DESIGN_DIRECTION,
+      inputSchema: {
+        title: z.string().min(1).max(120),
+        files: z.array(projectFileSchema).min(1).max(200).describe("All files for the project. Include an index.html."),
+        message: z.string().min(1).max(200).optional().describe("Initial git commit message."),
+      },
+      outputSchema: siteDetailsSchema,
+      annotations: { ...WRITE, title: "Create static project" },
+      _meta: {
+        "openai/outputTemplate": SITE_WIDGET_URI,
+        "openai/toolInvocation/invoking": "Creating project",
+        "openai/toolInvocation/invoked": "Project created",
+        ui: { resourceUri: SITE_WIDGET_URI },
+      },
+    },
+    async ({ title, files, message }) =>
+      invoke("create_project", { path: "projects" }, async () => {
+        const site = await siteManager.createProject({ title, files, ...(message !== undefined ? { message } : {}) });
+        return sitePreviewResult(
+          `Created ${site.title} (${files.length} file(s))\nPreview: ${site.previewUrl}\nVersion: ${site.latestVersion}`,
+          site as unknown as Record<string, unknown>,
+        );
+      }),
+  );
+
+  server.registerTool(
+    "update_project",
+    {
+      title: "Update static project",
+      description:
+        "Use this when the user wants to change an existing static project. Writes the provided files (creating or " +
+        "overwriting them), optionally deletes paths, and commits a new local version. No build/install ever runs. " +
+        SITE_DESIGN_DIRECTION,
+      inputSchema: {
+        projectId: z.string().describe("The project id returned by create_project (same as siteId)."),
+        message: z.string().min(1).max(200).describe("Short git commit message describing the change."),
+        title: z.string().min(1).max(120).optional(),
+        files: z.array(projectFileSchema).max(200).optional().describe("Files to create/overwrite. Omit to only delete."),
+        deletions: z
+          .array(z.string().min(1).max(400))
+          .max(200)
+          .optional()
+          .describe("Project-relative paths to remove in this version."),
+      },
+      outputSchema: siteDetailsSchema,
+      annotations: { ...WRITE, title: "Update static project" },
+      _meta: {
+        "openai/outputTemplate": SITE_WIDGET_URI,
+        "openai/toolInvocation/invoking": "Updating project",
+        "openai/toolInvocation/invoked": "Project updated",
+        ui: { resourceUri: SITE_WIDGET_URI },
+      },
+    },
+    async ({ projectId, message, title, files, deletions }) =>
+      invoke("update_project", { path: `projects/${projectId}` }, async () => {
+        const site = await siteManager.updateProject({
+          siteId: projectId,
+          message,
+          ...(title !== undefined ? { title } : {}),
+          ...(files !== undefined ? { files } : {}),
+          ...(deletions !== undefined ? { deletions } : {}),
+        });
+        return sitePreviewResult(
+          `Updated ${site.title}\nPreview: ${site.previewUrl}\nVersion: ${site.latestVersion}`,
+          site as unknown as Record<string, unknown>,
+        );
+      }),
+  );
+
+  server.registerTool(
+    "tag_version",
+    {
+      title: "Tag a project version",
+      description:
+        "Use this when the user wants to name/bookmark a specific version of a project (e.g. v1, release-2024). " +
+        "Creates a git tag pointing at a commit (default: the latest). The tag can then be previewed via ?version=<tag>.",
+      inputSchema: {
+        projectId: z.string().describe("The project id (siteId)."),
+        tag: z.string().min(1).max(64).describe("Tag name: letters/numbers/'.'/'_'/'-', not starting with '-' or '.'."),
+        version: z
+          .string()
+          .optional()
+          .describe("Commit hash or existing tag to point at. Defaults to the latest commit (HEAD)."),
+        force: z.boolean().optional().describe("Move the tag if it already exists."),
+      },
+      outputSchema: siteDetailsSchema,
+      annotations: { ...WRITE, title: "Tag a project version" },
+    },
+    async ({ projectId, tag, version, force }) =>
+      invoke("tag_version", { path: `projects/${projectId}` }, async () => {
+        const site = await siteManager.tagVersion({
+          siteId: projectId,
+          tag,
+          ...(version !== undefined ? { version } : {}),
+          ...(force !== undefined ? { force } : {}),
+        });
+        const tagLine = site.tags.map((t) => `${t.tag} → ${t.version.slice(0, 7)}`).join("\n") || "(no tags)";
+        return text(`Tagged ${tag} on ${site.title}\n\nTags:\n${tagLine}`, site as unknown as Record<string, unknown>);
       }),
   );
 
@@ -684,7 +845,9 @@ export function buildMcpServer(
     {
       title: "Write file",
       description:
-        "Create or overwrite a file with full contents. Returns a diff. Set createOnly to refuse overwriting.",
+        "Create or overwrite a file with full contents. Returns a diff. Set createOnly to refuse overwriting. " +
+        "Only write files the user's current request needs. Before overwriting or deleting a file you did NOT " +
+        "create this session, preview with show_diff and get explicit confirmation. Never write outside the workspace.",
       inputSchema: {
         workspaceId: z.string(),
         path: z.string(),
@@ -717,7 +880,8 @@ export function buildMcpServer(
     {
       title: "Edit file",
       description:
-        "Apply exact-string replacements. Each oldText must occur exactly once unless replaceAll is set. Returns a diff.",
+        "Apply exact-string replacements. Each oldText must occur exactly once unless replaceAll is set. Returns a diff. " +
+        "Keep edits scoped to the user's request; don't make unrelated or destructive changes to files you didn't create.",
       inputSchema: {
         workspaceId: z.string(),
         path: z.string(),

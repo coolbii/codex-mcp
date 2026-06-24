@@ -36,7 +36,7 @@ import type { Workspace } from "./workspaces.js";
  * cannot reach this surface — its own `-c` is denied (see RESTRICTED_ALLOW) and
  * writes into `.git/**` are denied at the PathGuard.
  */
-const GIT_HARDENING_ARGS = [
+export const GIT_HARDENING_ARGS = [
   "-c", "core.fsmonitor=false",
   "-c", "core.fsmonitorHookVersion=0",
   "-c", "core.hooksPath=" + devNull,
@@ -52,8 +52,8 @@ const GIT_HARDENING_ARGS = [
 // textconv-driver code execution. (Note: setting `diff.external=` empty does NOT
 // disable it — git tries to exec the empty string and `git diff` dies; these
 // per-invocation flags are the correct neutraliser.)
-const GIT_DIFF_SUBCOMMANDS = new Set(["diff", "log", "show"]);
-const GIT_DIFF_NEUTRALISERS = ["--no-ext-diff", "--no-textconv"];
+export const GIT_DIFF_SUBCOMMANDS = new Set(["diff", "log", "show"]);
+export const GIT_DIFF_NEUTRALISERS = ["--no-ext-diff", "--no-textconv"];
 
 /** Kill the whole process group so detached grandchildren cannot survive. */
 function killTree(child: ChildProcess): void {

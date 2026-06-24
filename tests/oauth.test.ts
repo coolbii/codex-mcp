@@ -278,7 +278,7 @@ it("rejects an auth code replay (single use)", async () => {
   expect(second.ok).toBe(false);
 });
 
-it("rotates refresh tokens (a leaked old token stops working)", async () => {
+it("rotates refresh tokens but tolerates ChatGPT's concurrent refresh (grace window)", async () => {
   const client = await register("rotate-refresh");
   const verifier = b64url(randomBytes(32));
   const challenge = b64url(createHash("sha256").update(verifier).digest());
@@ -302,7 +302,12 @@ it("rotates refresh tokens (a leaked old token stops working)", async () => {
   expect(refreshed.refresh_token).toBeTruthy();
   expect(refreshed.refresh_token).not.toBe(tok.refresh_token); // rotated
   expect((await refreshOnce(refreshed.refresh_token)).ok).toBe(true); // the NEW one works
-  expect((await refreshOnce(tok.refresh_token)).ok).toBe(false); // the OLD one is dead
+  // The OLD token still works within the grace window (this is what stops
+  // ChatGPT's parallel refresh from invalidating the whole grant) and returns a
+  // valid access token rather than erroring.
+  const dup = await refreshOnce(tok.refresh_token);
+  expect(dup.ok).toBe(true);
+  expect(((await dup.json()) as Record<string, any>).access_token).toBeTruthy();
 });
 
 it("burns the login ticket after repeated wrong passwords", async () => {

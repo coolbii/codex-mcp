@@ -44,6 +44,13 @@ export interface AppConfig {
   /** As the operator typed them — for human-readable errors only. */
   rawAllowedRoots: string[];
 
+  /**
+   * Where versioned static projects (create_project / sites) are written and
+   * served from. realpath-resolved and guaranteed to be inside allowedRoots.
+   * null ⇒ legacy behavior (a `devspace-sites/` folder under allowedRoots[0]).
+   */
+  projectsRoot: string | null;
+
   /** When true, /mcp requires a valid bearer token. */
   requireAuth: boolean;
   /** Bearer token. Generated + flagged if the operator did not supply one. */
@@ -73,6 +80,12 @@ export interface AppConfig {
   enablePackageInstall: boolean;
   /** Nx app scaffolding runs project code, so it is opt-in too. */
   enableAppScaffold: boolean;
+
+  /** Extra credential-file glob patterns (DENY_PATHS) beyond the built-ins.
+   *  Denied paths are refused by read_file and hidden from find/search. */
+  denyPaths: string[];
+  /** Redact high-confidence secrets from returned file/search content. */
+  secretScan: boolean;
 
   /** Resource caps. */
   maxReadBytes: number;
@@ -279,7 +292,24 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
   const isHttp = opts.transport === "http";
 
   const rawAllowedRoots = csv(env.ALLOWED_ROOTS);
-  const allowedRoots = validateAllowedRoots(rawAllowedRoots, warn);
+  // PROJECTS_ROOT (where versioned static projects live) is validated through
+  // the SAME gate as allowed roots and is implicitly added to them, so the
+  // path guard and per-folder git confinement both permit it.
+  const rawProjectsRoot = (env.PROJECTS_ROOT ?? "").trim();
+  const allowedRoots = validateAllowedRoots(
+    rawProjectsRoot ? [...rawAllowedRoots, rawProjectsRoot] : rawAllowedRoots,
+    warn,
+  );
+  let projectsRoot: string | null = null;
+  if (rawProjectsRoot) {
+    const realProjectsRoot = realpathSafe(resolve(expandHome(rawProjectsRoot)));
+    if (!allowedRoots.some((r) => isInsideOrEqual(realProjectsRoot, r))) {
+      throw new ConfigError(
+        `PROJECTS_ROOT must resolve inside an allowed root: ${rawProjectsRoot}`,
+      );
+    }
+    projectsRoot = realProjectsRoot;
+  }
 
   const host = (env.HOST ?? "127.0.0.1").trim();
   const port = int(env.PORT, 7676, "PORT");
@@ -428,6 +458,7 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
     publicBaseUrl,
     allowedRoots,
     rawAllowedRoots,
+    projectsRoot,
     requireAuth,
     ownerToken,
     ownerTokenGenerated,
@@ -441,6 +472,8 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
     logShellCommands: bool(env.LOG_SHELL_COMMANDS, false),
     enablePackageInstall,
     enableAppScaffold,
+    denyPaths: csv(env.DENY_PATHS),
+    secretScan: bool(env.SECRET_SCAN, true),
     maxReadBytes: int(env.MAX_READ_BYTES, 2_000_000, "MAX_READ_BYTES"),
     maxSearchMatches: int(env.MAX_SEARCH_MATCHES, 500, "MAX_SEARCH_MATCHES"),
     maxSearchFileBytes: int(env.MAX_SEARCH_FILE_BYTES, 5_000_000, "MAX_SEARCH_FILE_BYTES"),

@@ -1,15 +1,28 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { access, mkdir, readFile, realpath, readdir, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, realpath, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { basename, join, relative, resolve } from "node:path";
 import type { AppConfig } from "./config.js";
 import { PathGuard, isInsideOrEqual } from "./path-guard.js";
+import { CASE_INSENSITIVE_FS } from "./path-util.js";
+import { GIT_HARDENING_ARGS, GIT_DIFF_SUBCOMMANDS, GIT_DIFF_NEUTRALISERS } from "./shell-tools.js";
 
 const execFileAsync = promisify(execFile);
 const SITE_ID_RE = /^[a-z0-9][a-z0-9-]{2,63}$/;
 const VERSION_RE = /^[0-9a-f]{7,40}$/;
+// Git tag / ref names we accept. Must NOT start with '-' (else git reads it as
+// an option), no slashes, no '..' (range/traversal), conservative charset. This
+// flows into `git tag <name>` and `git show <name>:<file>` as a single argv.
+const TAG_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+// Caps for multi-file project writes (pure static text only — no build step).
+const MAX_PROJECT_FILES = 200;
+const MAX_PROJECT_FILE_BYTES = 2_000_000;
+const MAX_PROJECT_TOTAL_BYTES = 20_000_000;
+// Bound total projects so a client cannot exhaust disk by creating folders.
+const MAX_PROJECTS = 500;
+const DEV_NULL = process.platform === "win32" ? "NUL" : "/dev/null";
 export const SITE_ARCHETYPES = [
   "b2b-saas-quiet",
   "internal-dashboard",
@@ -34,9 +47,23 @@ export interface SiteVersion {
   createdAt: string;
 }
 
+export interface SiteTag {
+  tag: string;
+  version: string;
+  createdAt: string;
+}
+
+export interface ProjectFile {
+  /** Project-relative path, e.g. "index.html" or "pages/about.html". */
+  path: string;
+  /** UTF-8 text content (pure static: html/css/js/json/svg). */
+  content: string;
+}
+
 export interface SiteDetails extends SiteSummary {
   localPath: string;
   versions: SiteVersion[];
+  tags: SiteTag[];
 }
 
 interface SiteMeta {
@@ -78,10 +105,69 @@ function safeSiteId(siteId: string): string {
   return siteId;
 }
 
+// A version selector is EITHER a commit hash OR a tag name. Both are safe to
+// pass to git as a single revision argument once they match these strict REs.
 function normalizeVersion(version: string | undefined): string | null {
   if (!version) return null;
-  if (!VERSION_RE.test(version)) throw new SiteError("version must be a git commit hash");
-  return version;
+  if (version.includes("..")) throw new SiteError("version must not contain '..'");
+  if (VERSION_RE.test(version) || TAG_RE.test(version)) return version;
+  throw new SiteError("version must be a git commit hash or a valid tag name");
+}
+
+// Validate a user-supplied tag name before it reaches `git tag`.
+function safeTagName(tag: string): string {
+  if (typeof tag !== "string" || !TAG_RE.test(tag) || tag.includes("..")) {
+    throw new SiteError(
+      "tag must be 1-64 chars: letters/numbers/'.'/'_'/'-', not starting with '-' or '.', no '..'",
+    );
+  }
+  return tag;
+}
+
+// Reserved names a project write/delete must never target — they let git turn a
+// later read-only command into code execution, or would clobber our own state.
+// Compared case-folded so ".GIT"/".GitAttributes" can't slip past on a
+// case-insensitive volume (mirrors path-guard.ts::assertNotGitConfigWrite).
+const RESERVED_PROJECT_SEGMENTS = new Set([".git"]);
+const RESERVED_PROJECT_NAMES = new Set([
+  ".git",
+  ".gitattributes",
+  ".gitmodules",
+  ".devspace-site.json",
+]);
+
+/**
+ * Fold a path segment for reserved-name comparison. On case-insensitive volumes
+ * (macOS/Windows) lower-case AND strip trailing dots/spaces: Windows' path layer
+ * removes those before they reach the filesystem, so ".git." / ".GIT " would
+ * otherwise resolve onto the real .git directory. NFC only — we deliberately do
+ * not NFKC-fold and instead rely on the FS not bridging homoglyphs.
+ */
+function foldSegment(seg: string): string {
+  return CASE_INSENSITIVE_FS ? seg.normalize("NFC").toLowerCase().replace(/[. ]+$/, "") : seg;
+}
+
+// Validate one project-relative file path before writing/serving it. Blocks
+// absolute paths, parent traversal, control chars, and — case-folded on
+// case-insensitive filesystems — any .git component or git/metadata config file.
+function safeProjectRelPath(input: string): string {
+  if (typeof input !== "string" || input.length === 0) {
+    throw new SiteError("file path is required");
+  }
+  if (input.length > 400) throw new SiteError("file path too long");
+  if (/^([\\/]|[a-zA-Z]:)/.test(input)) throw new SiteError("Refusing an absolute file path");
+  const segments = input.split(/[\\/]/);
+  for (const seg of segments) {
+    const f = foldSegment(seg);
+    if (seg === "" || seg === "." || seg === ".." || RESERVED_PROJECT_SEGMENTS.has(f)) {
+      throw new SiteError(`Invalid path segment in "${input}"`);
+    }
+    if (RESERVED_PROJECT_NAMES.has(f)) {
+      throw new SiteError(`Refusing to write a reserved/git-config file: ${seg}`);
+    }
+    if (/[\x00-\x1f]/.test(seg)) throw new SiteError("control character in file path");
+  }
+  return input.replace(/\\/g, "/");
 }
 
 function normalizeArchetype(value: string | undefined): SiteArchetype {
@@ -445,9 +531,14 @@ export class SiteManager {
     private readonly config: AppConfig,
     private readonly guard: PathGuard,
   ) {
-    const root = config.allowedRoots[0];
-    if (!root) throw new SiteError("At least one allowed root is required for site previews");
-    this.baseDir = resolve(root, "devspace-sites");
+    if (config.projectsRoot) {
+      // Explicit projects root: project folders live directly under it.
+      this.baseDir = config.projectsRoot;
+    } else {
+      const root = config.allowedRoots[0];
+      if (!root) throw new SiteError("At least one allowed root is required for site previews");
+      this.baseDir = resolve(root, "devspace-sites");
+    }
   }
 
   async ensureReady(): Promise<void> {
@@ -522,6 +613,167 @@ export class SiteManager {
     return this.getSite(siteId);
   }
 
+  /**
+   * Create a project from an arbitrary set of pure-static files (html/css/js/…).
+   * The project folder is its own git repo; the initial files are committed as
+   * the first version. No build step ever runs — content is written verbatim.
+   */
+  async createProject(input: {
+    title: string;
+    files: ProjectFile[];
+    message?: string;
+  }): Promise<SiteDetails> {
+    await this.ensureReady();
+    if (!input.title || !input.title.trim()) throw new SiteError("title is required");
+    const existing = await readdir(this.baseDir, { withFileTypes: true }).catch(() => []);
+    if (existing.filter((e) => e.isDirectory() && SITE_ID_RE.test(e.name)).length >= MAX_PROJECTS) {
+      throw new SiteError(`project limit reached (${MAX_PROJECTS}); delete some projects first`);
+    }
+    const siteId = await this.uniqueSiteId(input.title);
+    const dir = this.siteDir(siteId);
+    await mkdir(dir, { recursive: false });
+
+    const now = new Date().toISOString();
+    const meta: SiteMeta = { siteId, title: input.title, createdAt: now, updatedAt: now };
+    try {
+      await this.writeProjectFiles(dir, input.files);
+      await writeFile(join(dir, ".devspace-site.json"), JSON.stringify(meta, null, 2) + "\n", "utf8");
+      await this.git(dir, ["init"]);
+      await this.git(dir, ["add", "-A"]);
+      await this.git(dir, ["commit", "-m", input.message?.trim() || `Create project: ${input.title}`]);
+      return await this.getSite(siteId);
+    } catch (err) {
+      // Don't leave a half-written / un-committed folder behind on failure.
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      throw err;
+    }
+  }
+
+  /**
+   * Apply file writes (and optional deletions) to an existing project and
+   * commit them as a new version. A no-op change produces no commit.
+   */
+  async updateProject(input: {
+    siteId: string;
+    message: string;
+    title?: string;
+    files?: ProjectFile[];
+    deletions?: string[];
+  }): Promise<SiteDetails> {
+    const siteId = safeSiteId(input.siteId);
+    const dir = await this.checkedSiteDir(siteId);
+    const meta = await this.readMeta(dir);
+    if (!input.message || !input.message.trim()) throw new SiteError("message is required");
+
+    if (input.files && input.files.length) await this.writeProjectFiles(dir, input.files);
+    const realDir = await realpath(dir);
+    for (const del of input.deletions ?? []) {
+      const rel = safeProjectRelPath(del);
+      const target = resolve(dir, rel);
+      if (!isInsideOrEqual(target, dir)) throw new SiteError("deletion path escapes project");
+      const realParent = await realpath(resolve(target, "..")).catch(() => realDir);
+      if (!isInsideOrEqual(realParent, realDir)) throw new SiteError("deletion path escapes project (symlink)");
+      await rm(target, { force: true });
+    }
+
+    const nextMeta: SiteMeta = {
+      ...meta,
+      title: input.title ?? meta.title,
+      updatedAt: new Date().toISOString(),
+    };
+    await writeFile(join(dir, ".devspace-site.json"), JSON.stringify(nextMeta, null, 2) + "\n", "utf8");
+
+    await this.git(dir, ["add", "-A"]);
+    if (await this.hasStagedChanges(dir)) {
+      await this.git(dir, ["commit", "-m", input.message.trim()]);
+    }
+    return this.getSite(siteId);
+  }
+
+  /** Tag a version (default the latest commit) of a project with a named tag. */
+  async tagVersion(input: {
+    siteId: string;
+    tag: string;
+    version?: string;
+    force?: boolean;
+  }): Promise<SiteDetails> {
+    const siteId = safeSiteId(input.siteId);
+    const dir = await this.checkedSiteDir(siteId);
+    const tag = safeTagName(input.tag);
+    const ref = normalizeVersion(input.version) ?? "HEAD";
+    // Confirm the ref resolves to a real commit before tagging.
+    await this.git(dir, ["cat-file", "-e", `${ref}^{commit}`]).catch(() => {
+      throw new SiteError(`Unknown version: ${input.version ?? "HEAD"}`);
+    });
+    const args = input.force ? ["tag", "-f", tag, ref] : ["tag", tag, ref];
+    await this.git(dir, args).catch((err: unknown) => {
+      const msg = String((err as { stderr?: string; message?: string }).stderr || (err as Error).message || "");
+      if (/already exists/i.test(msg)) {
+        throw new SiteError(`Tag already exists: ${tag} (pass force=true to move it)`);
+      }
+      throw new SiteError(`git tag failed: ${msg.slice(0, 200)}`);
+    });
+    return this.getSite(siteId);
+  }
+
+  /**
+   * Write a set of pure-static files into a project dir. Every path is checked
+   * for traversal/absolute/.git, capped in size + count, and re-checked against
+   * the realpath of its parent so a symlinked subdir cannot escape the project.
+   */
+  private async writeProjectFiles(dir: string, files: ProjectFile[]): Promise<void> {
+    if (!Array.isArray(files) || files.length === 0) {
+      throw new SiteError("at least one file is required");
+    }
+    if (files.length > MAX_PROJECT_FILES) {
+      throw new SiteError(`too many files (max ${MAX_PROJECT_FILES})`);
+    }
+    const realDir = await realpath(dir);
+    let total = 0;
+    const seen = new Set<string>();
+    for (const file of files) {
+      const rel = safeProjectRelPath(file.path);
+      if (seen.has(rel)) throw new SiteError(`duplicate file path: ${rel}`);
+      seen.add(rel);
+      if (typeof file.content !== "string") throw new SiteError(`content for "${rel}" must be a string`);
+      const bytes = Buffer.byteLength(file.content, "utf8");
+      if (bytes > MAX_PROJECT_FILE_BYTES) throw new SiteError(`file too large: ${rel}`);
+      total += bytes;
+      if (total > MAX_PROJECT_TOTAL_BYTES) throw new SiteError("project files exceed total size cap");
+
+      const target = resolve(dir, rel);
+      if (!isInsideOrEqual(target, dir)) throw new SiteError(`path escapes project: ${rel}`);
+      await mkdir(resolve(target, ".."), { recursive: true });
+      // Re-check the (now-existing) parent by realpath to defeat symlinked dirs.
+      const realParent = await realpath(resolve(target, ".."));
+      if (!isInsideOrEqual(realParent, realDir)) {
+        throw new SiteError(`path escapes project (symlink): ${rel}`);
+      }
+      // Drop any pre-existing leaf (incl. a symlink) before writing, so we never
+      // write THROUGH a symlink at the final component.
+      await rm(target, { force: true }).catch(() => {});
+      await writeFile(target, file.content, { encoding: "utf8", flag: "w" });
+    }
+  }
+
+  /** Named git tags for a project, newest first (lightweight tags → commit). */
+  private async tags(dir: string): Promise<SiteTag[]> {
+    const { stdout } = await this.git(dir, [
+      "for-each-ref",
+      "--sort=-creatordate",
+      "--format=%(refname:short)%09%(objectname)%09%(creatordate:iso-strict)",
+      "refs/tags",
+    ]).catch(() => ({ stdout: "" as string | Buffer }));
+    return String(stdout)
+      .split("\n")
+      .filter(Boolean)
+      .flatMap((line) => {
+        const [tag, version, createdAt] = line.split("\t");
+        if (!tag || !version) return [];
+        return [{ tag, version, createdAt: createdAt ?? "" }];
+      });
+  }
+
   async listSites(): Promise<SiteSummary[]> {
     await this.ensureReady();
     const entries = await readdir(this.baseDir, { withFileTypes: true }).catch(() => []);
@@ -551,41 +803,57 @@ export class SiteManager {
     const dir = await this.checkedSiteDir(siteId);
     const meta = await this.readMeta(dir);
     const versions = await this.versions(dir);
+    const tags = await this.tags(dir);
     return {
       ...meta,
       localPath: dir,
       previewUrl: this.previewUrl(siteId),
       latestVersion: versions[0]?.version ?? null,
       versions,
+      tags,
     };
   }
 
   async previewFile(siteIdInput: string, filePathInput: string, versionInput?: string): Promise<{
-    absolutePath: string;
+    absolutePath?: string;
+    body?: Buffer;
     contentType: string;
+    /** true only for a content-addressed commit hash (safe to cache forever). */
+    immutable?: boolean;
   }> {
     const siteId = safeSiteId(siteIdInput);
     const version = normalizeVersion(versionInput);
     const dir = await this.checkedSiteDir(siteId);
     const filePath = filePathInput === "" || filePathInput.endsWith("/") ? `${filePathInput}index.html` : filePathInput;
-    if (filePath.split(/[\\/]/).some((part) => part === ".git" || part === "..")) {
+    // Fold case so `.GIT/...` cannot expose repo internals on a case-insensitive
+    // volume (matches the write-side guard in safeProjectRelPath).
+    const parts = filePath.split(/[\\/]/);
+    if (parts.some((part) => foldSegment(part) === ".git" || part === "..")) {
       throw new SiteError("Refusing to serve hidden git data or parent traversal");
+    }
+    if (parts.some((part) => RESERVED_PROJECT_NAMES.has(foldSegment(part)))) {
+      throw new SiteError("Refusing to serve a reserved/git-config file");
     }
     if (/^([\\/]|[a-zA-Z]:)/.test(filePath)) {
       throw new SiteError("Refusing an absolute file path");
     }
 
     if (version) {
+      // Read the file straight out of git history into memory — no on-disk
+      // preview cache (which had unbounded growth) and no path to escape.
       await this.git(dir, ["cat-file", "-e", `${version}^{commit}`]);
-      const tmpDir = join(this.baseDir, ".preview-cache", siteId, version);
-      const target = resolve(tmpDir, filePath);
-      // Mirror the non-version branch: the write/serve target must stay inside
-      // the per-version cache dir.
-      if (!isInsideOrEqual(target, tmpDir)) throw new SiteError("Path escapes preview cache");
-      await mkdir(resolve(target, ".."), { recursive: true });
+      // Only a real commit object is content-addressed / cacheable forever. A
+      // tag is movable (tag_version force) — and TAG_RE permits hex-shaped tag
+      // names, so the string shape alone cannot distinguish them. Resolve it.
+      const isTag = await this.git(dir, ["rev-parse", "--verify", "--quiet", `refs/tags/${version}`])
+        .then(() => true)
+        .catch(() => false);
       const { stdout } = await this.git(dir, ["show", `${version}:${filePath}`], { encoding: "buffer" });
-      await writeFile(target, stdout as Buffer);
-      return { absolutePath: target, contentType: contentTypeFor(filePath) };
+      return {
+        body: stdout as Buffer,
+        contentType: contentTypeFor(filePath),
+        immutable: !isTag && /^[0-9a-f]{7,40}$/.test(version),
+      };
     }
 
     const target = resolve(dir, filePath);
@@ -650,7 +918,7 @@ export class SiteManager {
   }
 
   private async hasStagedChanges(dir: string): Promise<boolean> {
-    const result = await execFileAsync("git", ["diff", "--cached", "--quiet"], {
+    const result = await execFileAsync("git", this.hardenedGitArgs(["diff", "--cached", "--quiet"]), {
       cwd: dir,
       env: this.gitEnv(),
     }).catch((err: NodeJS.ErrnoException & { code?: number }) => err);
@@ -664,7 +932,32 @@ export class SiteManager {
       GIT_AUTHOR_EMAIL: process.env.GIT_AUTHOR_EMAIL || "devspace@localhost",
       GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || "DevSpace",
       GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || "devspace@localhost",
+      // Neutralise ambient git config + interactive/credential surfaces.
+      GIT_TERMINAL_PROMPT: "0",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: DEV_NULL,
+      GIT_ATTR_NOSYSTEM: "1",
     };
+  }
+
+  /**
+   * Prepend server-controlled -c hardening (and, for diff-machinery
+   * subcommands, the textconv/external-diff neutralisers) to every git call, so
+   * a per-repo .git/config or attributes file can never turn a git invocation
+   * into host code execution. Mirrors shell-tools.ts's hardened git surface.
+   */
+  private hardenedGitArgs(args: string[]): string[] {
+    const sub = args[0];
+    const neutralisers = sub && GIT_DIFF_SUBCOMMANDS.has(sub) ? GIT_DIFF_NEUTRALISERS : [];
+    // core.attributesFile closes the system/global clean-smudge attributes lane
+    // (in-tree .gitattributes is already blocked from being written).
+    return [
+      ...GIT_HARDENING_ARGS,
+      "-c", `core.attributesFile=${DEV_NULL}`,
+      ...(sub ? [sub] : []),
+      ...neutralisers,
+      ...args.slice(1),
+    ];
   }
 
   private async git(
@@ -676,7 +969,7 @@ export class SiteManager {
     if (!isInsideOrEqual(cwd, this.baseDir)) {
       throw new SiteError(`Refusing git outside site base: ${relative(this.baseDir, cwd)}`);
     }
-    const result = await execFileAsync("git", args, {
+    const result = await execFileAsync("git", this.hardenedGitArgs(args), {
       cwd,
       env: this.gitEnv(),
       maxBuffer: 8 * 1024 * 1024,

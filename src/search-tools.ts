@@ -89,7 +89,12 @@ async function loadGitignore(root: string): Promise<ReturnType<typeof ignore>> {
 async function candidateFiles(
   ws: Workspace,
   glob: string,
-  opts: { includeDotfiles: boolean; respectGitignore: boolean; limit: number },
+  opts: {
+    includeDotfiles: boolean;
+    respectGitignore: boolean;
+    limit: number;
+    excludePath?: (rel: string) => boolean;
+  },
 ): Promise<{ files: string[]; truncated: boolean }> {
   assertSafeGlob(glob);
   const matches = await fg(glob, {
@@ -110,6 +115,10 @@ async function candidateFiles(
     const ig = await loadGitignore(ws.root);
     files = ig.filter(files);
   }
+  // Drop credential files so they never surface in results (or get opened).
+  if (opts.excludePath) {
+    files = files.filter((f) => !opts.excludePath!(f));
+  }
 
   if (files.length > MAX_FILES_SCANNED) {
     files = files.slice(0, MAX_FILES_SCANNED);
@@ -127,13 +136,19 @@ export async function findFiles(
   _guard: PathGuard,
   ws: Workspace,
   glob: string,
-  opts: { maxResults?: number; includeDotfiles?: boolean; respectGitignore?: boolean } = {},
+  opts: {
+    maxResults?: number;
+    includeDotfiles?: boolean;
+    respectGitignore?: boolean;
+    excludePath?: (rel: string) => boolean;
+  } = {},
 ): Promise<FindFilesResult> {
   const limit = opts.maxResults ?? 500;
   const { files, truncated } = await candidateFiles(ws, glob || "**/*", {
     includeDotfiles: opts.includeDotfiles ?? false,
     respectGitignore: opts.respectGitignore ?? true,
     limit,
+    ...(opts.excludePath ? { excludePath: opts.excludePath } : {}),
   });
   return { files: files.sort(), truncated };
 }
@@ -153,6 +168,10 @@ export interface SearchFilesOptions {
   maxFileBytes: number;
   includeDotfiles?: boolean;
   respectGitignore?: boolean;
+  excludePath?: (rel: string) => boolean;
+  /** Optional transform applied to each matched line before it is returned
+   *  (used to redact secret-looking content from search output). */
+  redactLine?: (line: string) => string;
 }
 
 function looksBinary(buf: Buffer): boolean {
@@ -204,6 +223,7 @@ export async function searchFiles(
       includeDotfiles: opts.includeDotfiles ?? false,
       respectGitignore: opts.respectGitignore ?? true,
       limit: MAX_FILES_SCANNED,
+      ...(opts.excludePath ? { excludePath: opts.excludePath } : {}),
     },
   );
 
@@ -238,10 +258,11 @@ export async function searchFiles(
       const line = lines[i] ?? "";
       const probe = line.length > MAX_MATCH_LINE ? line.slice(0, MAX_MATCH_LINE) : line;
       if (matcher(probe)) {
+        const clipped = line.length > 400 ? line.slice(0, 400) + "…" : line;
         matches.push({
           file: relative(ws.root, real) || relPath,
           lineNumber: i + 1,
-          line: line.length > 400 ? line.slice(0, 400) + "…" : line,
+          line: opts.redactLine ? opts.redactLine(clipped) : clipped,
         });
         if (matches.length >= opts.maxResults) {
           truncated = true;

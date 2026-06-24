@@ -69,7 +69,17 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
       const version = typeof req.query.version === "string" ? req.query.version : undefined;
       const file = await siteManager.previewFile(siteId, path, version);
       res.type(file.contentType);
-      res.setHeader("Cache-Control", version ? "public, max-age=31536000, immutable" : "no-store");
+      // Only a content-addressed commit hash is safe to cache forever; a tag is
+      // movable. previewFile resolves this authoritatively (a hex-shaped tag name
+      // is NOT immutable). No version = the live working tree.
+      res.setHeader(
+        "Cache-Control",
+        !version
+          ? "no-store"
+          : file.immutable
+            ? "public, max-age=31536000, immutable"
+            : "public, max-age=0, must-revalidate",
+      );
       // Opaque-origin sandbox: the generated site renders + runs its own JS but
       // is isolated from this origin's OAuth/MCP surface. nosniff stops MIME
       // confusion turning an asset into executable content on this origin.
@@ -78,7 +88,8 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
         "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads",
       );
       res.setHeader("X-Content-Type-Options", "nosniff");
-      res.sendFile(file.absolutePath);
+      if (file.body) res.send(file.body);
+      else res.sendFile(file.absolutePath as string);
     } catch (err) {
       const e = err as Error;
       res.status(404).type("text/plain").send(e.message);
@@ -146,11 +157,24 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
       const server = buildMcpServer(config, guard, registry, appPreviewManager);
       await server.connect(transport);
     } else {
-      res.status(400).json({
-        jsonrpc: "2.0",
-        error: { code: -32000, message: "Bad Request: No valid session ID provided" },
-        id: null,
+      // ChatGPT frequently sends resources/read, tools/call, etc. WITHOUT
+      // echoing the mcp-session-id (or with one we lost on restart). Returning
+      // 400 here surfaces in ChatGPT as "error loading app" / a reconnect loop.
+      // Handle these statelessly with a fresh ephemeral server+transport — the
+      // SDK processes a non-initialize request fine in stateless mode.
+      const ephemeral = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+        enableDnsRebindingProtection: config.enableDnsRebindingProtection,
+        allowedHosts: config.allowedHosts,
+        ...(config.allowedOrigins.length ? { allowedOrigins: config.allowedOrigins } : {}),
       });
+      res.on("close", () => {
+        void ephemeral.close();
+      });
+      const server = buildMcpServer(config, guard, registry, appPreviewManager);
+      await server.connect(ephemeral);
+      await ephemeral.handleRequest(req, res, req.body);
       return;
     }
 

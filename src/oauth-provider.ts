@@ -52,6 +52,11 @@ const LOGIN_WINDOW_MS = 15 * 60_000;
 const LOGIN_MAX_PER_SOURCE = 20; // login POSTs per source per window
 // Bound the persisted DCR client set (open /register over the tunnel).
 const MAX_CLIENTS = 1000;
+// Refresh-token rotation grace: a just-rotated RT stays usable for this long so
+// ChatGPT's PARALLEL refreshes (it refreshes before every tool call, often
+// concurrently with the same RT) don't get invalid_grant and drop the whole
+// grant. After the window the old RT is rejected (reuse detection preserved).
+const REFRESH_GRACE_MS = 5 * 60_000;
 
 interface AuthContext {
   clientId: string;
@@ -73,6 +78,8 @@ interface RefreshInfo {
   clientId: string;
   scopes: string[];
   resource: string;
+  supersededBy?: string; // the RT that rotated this one
+  supersededAt?: number; // ms epoch when it was rotated (grace window starts)
 }
 interface PersistShape {
   clients: Record<string, OAuthClientInformationFull>;
@@ -235,7 +242,7 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
 <form method="POST" action="/oauth/login" autocomplete="off">
   <input type="hidden" name="ticket" value="${escapeHtml(ticket)}">
   <label for="pw">Owner password (your OWNER_TOKEN)</label>
-  <input id="pw" type="password" name="password" autofocus required>
+  <input id="pw" type="text" name="password" autofocus required autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text">
   ${error ? '<p class="err">Incorrect password. Try again.</p>' : ""}
   <button type="submit">Authorize</button>
 </form>
@@ -428,19 +435,46 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
     }
     const granted = scopes && scopes.length ? scopes.filter((s) => info.scopes.includes(s)) : info.scopes;
 
-    // Rotate the refresh token: a leaked/old refresh token stops working once
-    // the legitimate client next refreshes (OAuth 2.1 guidance for public clients).
-    this.refreshTokens.delete(refreshToken);
+    const mintAccess = (): string => {
+      const access = newToken();
+      this.accessTokens.set(access, {
+        clientId: info.clientId,
+        scopes: granted,
+        resource: info.resource,
+        expiresAt: Date.now() + ACCESS_TTL_SEC * 1000,
+      });
+      return access;
+    };
+
+    // Already rotated: this is a concurrent/duplicate refresh (ChatGPT refreshes
+    // in parallel with the same RT). Within the grace window, succeed and return
+    // the CURRENT refresh token — erroring here would make ChatGPT drop the grant
+    // and force a full re-auth (the reconnect loop). After the window, reject.
+    if (info.supersededBy) {
+      if ((info.supersededAt ?? 0) + REFRESH_GRACE_MS < Date.now()) {
+        audit({ event: "auth_fail", success: false, detail: "oauth refresh: reuse after grace" });
+        throw new Error("invalid_grant");
+      }
+      const currentRt = this.refreshTokens.has(info.supersededBy) ? info.supersededBy : refreshToken;
+      const access = mintAccess();
+      this.persist();
+      audit({ event: "auth_ok", success: true, detail: "oauth refresh ok (grace replay)" });
+      return {
+        access_token: access,
+        token_type: "Bearer",
+        expires_in: ACCESS_TTL_SEC,
+        scope: granted.join(" "),
+        refresh_token: currentRt,
+      };
+    }
+
+    // First use of this RT: rotate, but KEEP the old one usable for the grace
+    // window so a parallel refresh with the same RT still succeeds.
     const newRefresh = newToken();
     this.refreshTokens.set(newRefresh, { clientId: info.clientId, scopes: info.scopes, resource: info.resource });
-
-    const access = newToken();
-    this.accessTokens.set(access, {
-      clientId: info.clientId,
-      scopes: granted,
-      resource: info.resource,
-      expiresAt: Date.now() + ACCESS_TTL_SEC * 1000,
-    });
+    info.supersededBy = newRefresh;
+    info.supersededAt = Date.now();
+    const access = mintAccess();
     this.persist();
     audit({ event: "auth_ok", success: true, detail: "oauth refresh ok (rotated)" });
     return {
@@ -526,6 +560,9 @@ export class DevspaceOAuthProvider implements OAuthServerProvider {
         prunedAccess = true;
       }
     }
+    // Drop rotated refresh tokens once their grace window has fully lapsed.
+    for (const [k, v] of this.refreshTokens)
+      if (v.supersededAt && v.supersededAt + REFRESH_GRACE_MS < now) this.refreshTokens.delete(k);
     if (prunedAccess) this.persist();
     for (const [k, v] of this.loginHits) if (v.resetAt < now) this.loginHits.delete(k);
   }
