@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { access, mkdir, readFile, realpath, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, readFile, realpath, readdir, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { basename, join, relative, resolve } from "node:path";
@@ -737,6 +737,17 @@ export class SiteManager {
       throw new SiteError(`too many files (max ${MAX_PROJECT_FILES})`);
     }
     const realDir = await realpath(dir);
+    // The project dir's own realpath must stay inside the trusted base (anchor to
+    // baseDir, not just to itself) and must not resolve into a read-only root.
+    // checkedSiteDir already enforces this for updates; this also covers
+    // createProject, whose freshly-made dir does not pass through checkedSiteDir.
+    const realBase = await realpath(this.baseDir);
+    if (!isInsideOrEqual(realDir, realBase)) {
+      throw new SiteError("project dir escapes base directory (symlink)");
+    }
+    if (this.guard.isReadonly(realDir)) {
+      throw new SiteError("project dir is inside a read-only root");
+    }
     let total = 0;
     const seen = new Set<string>();
     for (const file of files) {
@@ -892,8 +903,29 @@ export class SiteManager {
     await this.ensureReady();
     const dir = this.siteDir(siteId);
     if (!isInsideOrEqual(dir, this.baseDir)) throw new SiteError("Site path escapes base directory");
-    const st = await stat(dir).catch(() => null);
-    if (!st?.isDirectory()) throw new SiteError(`Unknown site: ${siteId}`);
+    // lstat does NOT follow the final component, so a project entry that is
+    // itself a symlink is caught here and rejected — before any write/delete.
+    // A symlinked project root could point outside the sandbox, and the
+    // downstream realDir-relative checks (writeProjectFiles / deletions) anchor
+    // to the dir's OWN realpath, which would already have absorbed that escape.
+    const lst = await lstat(dir).catch(() => null);
+    if (!lst) throw new SiteError(`Unknown site: ${siteId}`);
+    if (lst.isSymbolicLink()) throw new SiteError(`Refusing a symlinked project entry: ${siteId}`);
+    if (!lst.isDirectory()) throw new SiteError(`Unknown site: ${siteId}`);
+    // Anchor containment to the trusted base via the symlink-resolved realpath,
+    // so a symlink anywhere in the chain (incl. an intermediate component lstat
+    // does not report on) cannot move writes outside the sandbox.
+    const realDir = await realpath(dir).catch(() => null);
+    const realBase = await realpath(this.baseDir);
+    if (!realDir || !isInsideOrEqual(realDir, realBase)) {
+      throw new SiteError("Site path escapes base directory (symlink)");
+    }
+    // Defense-in-depth: SiteManager writes directly (not via resolveForWrite),
+    // so refuse a project whose real location sits inside a read-only root
+    // (e.g. a live bot's source exposed via READONLY_ROOTS) even via a symlink.
+    if (this.guard.isReadonly(realDir)) {
+      throw new SiteError(`Site path is inside a read-only root: ${siteId}`);
+    }
     return dir;
   }
 

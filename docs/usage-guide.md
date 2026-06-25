@@ -135,6 +135,7 @@ ChatGPT instead of Codex.
 | `write_file` / `edit_file` | ✗ | Create/overwrite, or exact-string edit — prompts |
 | `create_site` / `update_site` | ✗ | Create or update a versioned static website preview |
 | `list_sites` / `get_site_versions` | ✓ | Inspect generated site previews and their git history |
+| `create_canvas_project` / `create_edit_session` | ✗ | Create or open a scoped browser-editable canvas; saves commit new project versions |
 | `install_packages` | ✗ | Optional. Enabled only with `ENABLE_PACKAGE_INSTALL=1`; ChatGPT infers registry packages, you approve the list, install scripts stay disabled. |
 | `create_app` | ✗ | Optional. Enabled only with `ENABLE_APP_SCAFFOLD=1`; scaffolds React/Next apps. Defaults to an isolated Nx + Next workspace. |
 | `start_app_preview` | ✗ | Optional. Enabled only with `ENABLE_APP_SCAFFOLD=1`; installs dependencies if needed, starts the app dev server, and renders a ChatGPT preview. |

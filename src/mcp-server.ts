@@ -27,6 +27,7 @@ import { AppPreviewManager } from "./app-preview-tools.js";
 import { audit } from "./audit-log.js";
 import { SiteManager, SITE_ARCHETYPES } from "./site-tools.js";
 import { SecretGuard } from "./secret-guard.js";
+import { EditSessionManager } from "./edit-session-tools.js";
 
 const SERVER_NAME = "devspace";
 const SERVER_VERSION = "0.1.0";
@@ -102,6 +103,43 @@ const appPreviewSchema = z.object({
   stdout: z.string(),
   stderr: z.string(),
   durationMs: z.number().int().nonnegative(),
+});
+const editSessionSchema = z.object({
+  editSessionId: z.string(),
+  siteId: z.string(),
+  title: z.string(),
+  scenePath: z.string(),
+  editUrl: z.string(),
+  previewUrl: z.string(),
+  sitePreviewUrl: z.string(),
+  expiresAt: z.string(),
+});
+const canvasProjectSchema = siteDetailsSchema.extend({
+  editSessionId: z.string(),
+  editUrl: z.string(),
+  scenePath: z.string(),
+  sitePreviewUrl: z.string(),
+  expiresAt: z.string(),
+});
+const canvasNodeSchema = z.object({
+  id: z.string().optional(),
+  type: z.enum(["rect", "text"]),
+  x: z.number(),
+  y: z.number(),
+  width: z.number(),
+  height: z.number(),
+  fill: z.string().optional(),
+  stroke: z.string().optional(),
+  text: z.string().optional(),
+  fontSize: z.number().optional(),
+  color: z.string().optional(),
+});
+const canvasSceneSchema = z.object({
+  version: z.literal(1).optional(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  background: z.string().optional(),
+  nodes: z.array(canvasNodeSchema).max(300).optional(),
 });
 
 function text(s: string, structured?: Record<string, unknown>): CallToolResult {
@@ -234,6 +272,7 @@ export function buildMcpServer(
   guard: PathGuard,
   registry = new WorkspaceRegistry(guard, config.allowedRoots),
   appPreviewManager = new AppPreviewManager(config, guard),
+  editSessionManager?: EditSessionManager,
 ): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
@@ -297,6 +336,7 @@ export function buildMcpServer(
   const WRITE = { readOnlyHint: false, destructiveHint: true, openWorldHint: false } as const;
   const secretGuard = new SecretGuard({ extraDenyPatterns: config.denyPaths, scanContent: config.secretScan });
   const siteManager = new SiteManager(config, guard);
+  const canvasSessions = editSessionManager ?? new EditSessionManager(config, siteManager);
   const widgetOrigin = config.publicBaseUrl ?? `http://${config.host}:${config.port}`;
   const widgetMeta = {
     "openai/widgetDescription": "Interactive preview for locally generated DevSpace sites.",
@@ -819,6 +859,98 @@ export function buildMcpServer(
         });
         const tagLine = site.tags.map((t) => `${t.tag} → ${t.version.slice(0, 7)}`).join("\n") || "(no tags)";
         return text(`Tagged ${tag} on ${site.title}\n\nTags:\n${tagLine}`, site as unknown as Record<string, unknown>);
+      }),
+  );
+
+  server.registerTool(
+    "create_canvas_project",
+    {
+      title: "Create editable canvas project",
+      description:
+        "Create a versioned static project backed by structured canvas JSON and return an edit-session URL rendered in ChatGPT. " +
+        "Use this when the user wants to directly drag, resize, and edit items on the preview canvas. " +
+        "The browser editor can only save the bound scene/project for this session.",
+      inputSchema: {
+        title: z.string().min(1).max(120),
+        scene: canvasSceneSchema
+          .optional()
+          .describe("Optional initial structured canvas scene. Omit for a starter scene."),
+        ttlSeconds: z
+          .number()
+          .int()
+          .min(60)
+          .max(604800)
+          .optional()
+          .describe("Edit session lifetime in seconds. Defaults to 24 hours."),
+      },
+      outputSchema: canvasProjectSchema,
+      annotations: { ...WRITE, title: "Create editable canvas project" },
+      _meta: {
+        "openai/outputTemplate": SITE_WIDGET_URI,
+        "openai/toolInvocation/invoking": "Creating editable canvas",
+        "openai/toolInvocation/invoked": "Editable canvas ready",
+        ui: { resourceUri: SITE_WIDGET_URI },
+      },
+    },
+    async ({ title, scene, ttlSeconds }) =>
+      invoke("create_canvas_project", { path: "projects" }, async () => {
+        const project = await canvasSessions.createCanvasProject({
+          title,
+          ...(scene !== undefined ? { scene } : {}),
+          ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
+        });
+        return sitePreviewResult(
+          `Created editable canvas ${project.title}\nEdit: ${project.editUrl}\nPreview: ${project.sitePreviewUrl}\nVersion: ${project.latestVersion}`,
+          project as unknown as Record<string, unknown>,
+        );
+      }),
+  );
+
+  server.registerTool(
+    "create_edit_session",
+    {
+      title: "Create canvas edit session",
+      description:
+        "Create an unguessable browser edit session for an existing canvas project. " +
+        "The returned previewUrl opens the editor; sitePreviewUrl is the normal read-only rendered project preview.",
+      inputSchema: {
+        projectId: z.string().describe("The project id returned by create_canvas_project or create_project."),
+        title: z.string().min(1).max(120).optional(),
+        scenePath: z
+          .string()
+          .min(1)
+          .max(180)
+          .optional()
+          .describe("Project-relative JSON scene path. Defaults to scene.json."),
+        ttlSeconds: z
+          .number()
+          .int()
+          .min(60)
+          .max(604800)
+          .optional()
+          .describe("Edit session lifetime in seconds. Defaults to 24 hours."),
+      },
+      outputSchema: editSessionSchema,
+      annotations: { ...WRITE, title: "Create canvas edit session" },
+      _meta: {
+        "openai/outputTemplate": SITE_WIDGET_URI,
+        "openai/toolInvocation/invoking": "Opening editable canvas",
+        "openai/toolInvocation/invoked": "Editable canvas ready",
+        ui: { resourceUri: SITE_WIDGET_URI },
+      },
+    },
+    async ({ projectId, title, scenePath, ttlSeconds }) =>
+      invoke("create_edit_session", { path: `projects/${projectId}` }, async () => {
+        const session = await canvasSessions.createSession({
+          siteId: projectId,
+          ...(title !== undefined ? { title } : {}),
+          ...(scenePath !== undefined ? { scenePath } : {}),
+          ...(ttlSeconds !== undefined ? { ttlSeconds } : {}),
+        });
+        return sitePreviewResult(
+          `Editable canvas session\nEdit: ${session.editUrl}\nPreview: ${session.sitePreviewUrl}\nExpires: ${session.expiresAt}`,
+          session as unknown as Record<string, unknown>,
+        );
       }),
   );
 

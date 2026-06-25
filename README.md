@@ -171,6 +171,8 @@ locally first with `node scripts/smoke-oauth.mjs`.
 | `create_site` | ✗ | Create a versioned static website preview under `devspace-sites`. |
 | `update_site` | ✗ | Update a generated site and commit a new version. |
 | `list_sites` / `get_site_versions` | ✓ | Inspect generated sites and git history. |
+| `create_canvas_project` | ✗ | Create a versioned static project with a browser-editable canvas session. |
+| `create_edit_session` | ✗ | Open a scoped human-edit session for an existing canvas project. |
 | `install_packages` | ✗ | **Only if `ENABLE_PACKAGE_INSTALL=1`.** Install model-inferred registry packages with npm/pnpm/yarn/bun; install scripts disabled by default. |
 | `create_app` | ✗ | **Only if `ENABLE_APP_SCAFFOLD=1`.** Scaffold React/Next apps. Defaults to a clean isolated Nx + Next workspace (`mode=isolated`); use `mode=existing` only for a healthy existing Nx monorepo. |
 | `start_app_preview` | ✗ | **Only if `ENABLE_APP_SCAFFOLD=1`.** Install dependencies if needed, start a local Nx/Next dev server, and return a ChatGPT-rendered preview URL. |

@@ -346,8 +346,10 @@ it("puts the site/preview routes behind the host guard (not public)", async () =
     });
   // Forged Host (DNS-rebinding) is rejected by the guard...
   expect(await rawGet("/sites/none", "evil.attacker.example")).toBe(403);
+  expect(await rawGet("/edit-sessions/none", "evil.attacker.example")).toBe(403);
   // ...while the correct host passes the guard and reaches the handler (404).
   expect(await rawGet("/sites/none")).toBe(404);
+  expect(await rawGet("/edit-sessions/none")).toBe(404);
 });
 
 it("rejects login with the wrong owner password", async () => {

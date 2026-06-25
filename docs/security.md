@@ -236,14 +236,17 @@ such:
 - **Nx scaffolding** runs only a workspace-local `node_modules/.bin/nx` whose
   realpath is asserted to stay inside the workspace (no `npx`/`bunx` download, no
   symlink-out to a host binary).
-- **Preview/site HTTP routes** (`/sites/*`, `/app-previews/*`, `/_next/*`) are
-  loaded by the ChatGPT iframe, which cannot carry the OAuth bearer. They are
-  protected by: the same Host/Origin (DNS-rebinding) guard as `/mcp`, an
-  **unguessable random preview id** (the URL is the capability), path containment
-  (the id-less `/_next` proxy is confined to `_next/` assets — it cannot reach the
-  app's `/api/*` via `..%2f`), and — for served sites — a `sandbox` CSP so
-  model-written HTML/JS runs in an **opaque origin** and can never touch the
-  auth/token surface that shares the hostname.
+- **Preview/site/edit-session HTTP routes** (`/sites/*`, `/app-previews/*`,
+  `/_next/*`, `/edit-sessions/*`) are loaded by the ChatGPT iframe, which cannot
+  carry the OAuth bearer. They are protected by: the same Host/Origin
+  (DNS-rebinding) guard as `/mcp`, an **unguessable random preview/edit-session
+  id** (the URL is the capability), path containment (the id-less `/_next` proxy
+  is confined to `_next/` assets — it cannot reach the app's `/api/*` via
+  `..%2f`), and — for served sites — a `sandbox` CSP so model-written HTML/JS
+  runs in an **opaque origin** and can never touch the auth/token surface that
+  shares the hostname. Browser edit-session saves additionally require the
+  matching `X-DevSpace-Edit-Session` header and can only write the session-bound
+  structured canvas scene/project files.
 - Generated sites/apps are written inside the sandbox (under the first allowed
   root) via the PathGuard.
 

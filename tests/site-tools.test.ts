@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { loadConfig } from "../src/config.js";
 import { SiteManager } from "../src/site-tools.js";
@@ -309,4 +309,35 @@ it("marks commit-hash versions immutable but hex-shaped tags movable", async () 
   await sites.tagVersion({ siteId: p.siteId, tag: "deadbeef" });
   const byTag = await sites.previewFile(p.siteId, "index.html", "deadbeef");
   expect(byTag.immutable).toBe(false);
+});
+
+// A project entry that is itself a symlink escaping the sandbox must be rejected
+// before any write/delete — the containment checks are anchored to the trusted
+// base, not to the (post-symlink) realpath of the project dir. There is no MCP
+// primitive that can plant such a symlink today, so this is defense-in-depth.
+it("refuses a symlinked project entry that escapes the sandbox", async () => {
+  fx = await makeFixture();
+  const sites = manager();
+  // A real project so baseDir exists and serves as a control.
+  await sites.createProject({ title: "Real", files: [{ path: "index.html", content: "real" }] });
+
+  // A directory completely outside the allowed root (the sandbox).
+  const outside = join(fx.base, "outside-sandbox");
+  await mkdir(outside, { recursive: true });
+  await writeFile(join(outside, "index.html"), "untouched", "utf8");
+
+  // Plant a project entry under baseDir that is a symlink pointing outside it.
+  const evilId = "evil-escape";
+  await symlink(outside, join(sites.baseDir, evilId), "dir");
+
+  // Every checkedSiteDir consumer must refuse it.
+  await expect(
+    sites.updateProject({ siteId: evilId, message: "x", files: [{ path: "index.html", content: "pwn" }] }),
+  ).rejects.toThrow(/symlink|escapes/i);
+  await expect(sites.getSite(evilId)).rejects.toThrow(/symlink|escapes/i);
+  await expect(sites.tagVersion({ siteId: evilId, tag: "v1" })).rejects.toThrow(/symlink|escapes/i);
+  await expect(sites.previewFile(evilId, "index.html")).rejects.toThrow(/symlink|escapes/i);
+
+  // No write may have landed through the symlink into the escape target.
+  await expect(readFile(join(outside, "index.html"), "utf8")).resolves.toBe("untouched");
 });

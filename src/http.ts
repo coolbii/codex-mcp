@@ -25,6 +25,7 @@ import { audit } from "./audit-log.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 import { SiteManager } from "./site-tools.js";
 import { AppPreviewManager } from "./app-preview-tools.js";
+import { EditSessionManager } from "./edit-session-tools.js";
 
 export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
   const app = express();
@@ -38,7 +39,9 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
   const auth = buildAuth(config);
   const siteManager = new SiteManager(config, guard);
   const appPreviewManager = new AppPreviewManager(config, guard);
+  const editSessionManager = new EditSessionManager(config, siteManager);
   app.locals.appPreviewManager = appPreviewManager;
+  app.locals.editSessionManager = editSessionManager;
 
   // Health check — unauthenticated, no sensitive info.
   app.get("/healthz", (_req: Request, res: Response) => {
@@ -50,14 +53,14 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
     app.use(auth.router);
   }
 
-  // The site/preview routes are loaded by the ChatGPT iframe (a browser that
+  // The site/preview/edit-session routes are loaded by the ChatGPT iframe (a browser that
   // cannot carry the OAuth bearer). They are protected by: the same
   // DNS-rebinding Host/Origin guard as /mcp, an UNGUESSABLE random id (the URL
   // is the capability), path containment, and — for served sites — a `sandbox`
   // CSP so the model-written HTML/JS runs in an opaque origin and can never
   // touch the auth/token surface that shares this hostname.
   const previewGuard = hostOriginGuard(config.allowedHosts, config.allowedOrigins);
-  app.use(["/sites", "/app-previews", "/_next"], previewGuard);
+  app.use(["/sites", "/app-previews", "/_next", "/edit-sessions"], previewGuard);
 
   app.get(/^\/sites\/([^/]+)(?:\/(.*))?$/, async (req: Request, res: Response) => {
     try {
@@ -121,6 +124,33 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
     }
   });
 
+  app.get(/^\/edit-sessions\/([^/]+)\/?$/, async (req: Request, res: Response) => {
+    try {
+      await editSessionManager.handleEditor(req, res);
+    } catch (err) {
+      const e = err as Error;
+      res.status(404).type("text/plain").send(e.message);
+    }
+  });
+
+  app.get(/^\/edit-sessions\/([^/]+)\/scene$/, async (req: Request, res: Response) => {
+    try {
+      await editSessionManager.handleScene(req, res);
+    } catch (err) {
+      const e = err as Error;
+      res.status(404).json({ error: e.message });
+    }
+  });
+
+  app.post(/^\/edit-sessions\/([^/]+)\/save$/, async (req: Request, res: Response) => {
+    try {
+      await editSessionManager.handleSave(req, res);
+    } catch (err) {
+      const e = err as Error;
+      res.status(400).json({ error: e.message });
+    }
+  });
+
   // Edge Host/Origin guard for the MCP endpoint.
   app.use("/mcp", hostOriginGuard(config.allowedHosts, config.allowedOrigins));
 
@@ -154,7 +184,7 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
           audit({ event: "session_close", workspaceId: sid, success: true });
         }
       };
-      const server = buildMcpServer(config, guard, registry, appPreviewManager);
+      const server = buildMcpServer(config, guard, registry, appPreviewManager, editSessionManager);
       await server.connect(transport);
     } else {
       // ChatGPT frequently sends resources/read, tools/call, etc. WITHOUT
@@ -172,7 +202,7 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
       res.on("close", () => {
         void ephemeral.close();
       });
-      const server = buildMcpServer(config, guard, registry, appPreviewManager);
+      const server = buildMcpServer(config, guard, registry, appPreviewManager, editSessionManager);
       await server.connect(ephemeral);
       await ephemeral.handleRequest(req, res, req.body);
       return;

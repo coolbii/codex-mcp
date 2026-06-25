@@ -130,6 +130,7 @@ open_workspace → search_files / read_file → show_diff → edit_file
 | `write_file` / `edit_file` | ✗ | 建立/覆寫，或精準字串替換 —— 會跳確認 |
 | `create_site` / `update_site` | ✗ | 建立或更新有 git 版控的靜態網站 preview |
 | `list_sites` / `get_site_versions` | ✓ | 檢視產生出的網站 preview 與 git history |
+| `create_canvas_project` / `create_edit_session` | ✗ | 建立或開啟限定範圍的瀏覽器可編輯 canvas；儲存時會 commit 新版本 |
 | `install_packages` | ✗ | 選配。只有 `ENABLE_PACKAGE_INSTALL=1` 才會開；ChatGPT 推導 registry 套件，你審核清單，預設停用 install scripts。 |
 | `create_app` | ✗ | 選配。只有 `ENABLE_APP_SCAFFOLD=1` 才會開；預設建立隔離的 Nx + Next workspace。 |
 | `start_app_preview` | ✗ | 選配。只有 `ENABLE_APP_SCAFFOLD=1` 才會開；必要時安裝依賴、啟動 app dev server，並在 ChatGPT 顯示 preview。 |
