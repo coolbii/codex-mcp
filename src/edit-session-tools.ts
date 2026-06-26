@@ -1,5 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Request, Response } from "express";
 import type { AppConfig } from "./config.js";
 import { audit } from "./audit-log.js";
@@ -390,11 +392,55 @@ function editHtml(session: EditSession): string {
 
 export class EditSessionManager {
   private readonly sessions = new Map<string, EditSession>();
+  private readonly storePath: string;
 
   constructor(
     private readonly config: AppConfig,
     private readonly siteManager: SiteManager,
-  ) {}
+  ) {
+    this.storePath = config.editSessionStorePath;
+    this.load();
+  }
+
+  /** Load persisted sessions (dropping expired) so edit URLs survive restarts.
+   *  devspace restarts on every deploy AND on every .env hot-reload, which would
+   *  otherwise invalidate every outstanding edit link. */
+  private load(): void {
+    try {
+      if (!existsSync(this.storePath)) return;
+      const arr = JSON.parse(readFileSync(this.storePath, "utf8")) as unknown;
+      const now = Date.now();
+      for (const s of Array.isArray(arr) ? (arr as EditSession[]) : []) {
+        if (
+          s &&
+          typeof s.editSessionId === "string" &&
+          typeof s.siteId === "string" &&
+          typeof s.scenePath === "string" &&
+          typeof s.expiresAt === "number" &&
+          s.expiresAt > now
+        ) {
+          this.sessions.set(s.editSessionId, s);
+        }
+      }
+    } catch {
+      // Corrupt/unreadable store — start empty rather than crash.
+    }
+  }
+
+  /** Atomically persist sessions. The ids are capabilities, so the file is 0600
+   *  (mirrors the OAuth store). Best-effort: a write failure must not break the
+   *  request that triggered it. */
+  private persist(): void {
+    try {
+      const dir = dirname(this.storePath);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const tmp = join(dir, `.edit-sessions.${randomUUID()}.tmp`);
+      writeFileSync(tmp, JSON.stringify([...this.sessions.values()], null, 2), { mode: 0o600 });
+      renameSync(tmp, this.storePath);
+    } catch {
+      /* best-effort */
+    }
+  }
 
   async createCanvasProject(input: { title: string; scene?: unknown; ttlSeconds?: number }): Promise<CanvasProjectDetails> {
     const scene = validateScene(input.scene ?? defaultScene(input.title));
@@ -428,6 +474,7 @@ export class EditSessionManager {
       expiresAt: now + clampTtl(input.ttlSeconds),
     };
     this.sessions.set(editSessionId, session);
+    this.persist();
     return this.details(session, site.previewUrl);
   }
 
@@ -526,8 +573,13 @@ export class EditSessionManager {
 
   private prune(): void {
     const now = Date.now();
+    let changed = false;
     for (const [id, session] of this.sessions) {
-      if (session.expiresAt <= now) this.sessions.delete(id);
+      if (session.expiresAt <= now) {
+        this.sessions.delete(id);
+        changed = true;
+      }
     }
+    if (changed) this.persist();
   }
 }

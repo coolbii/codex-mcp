@@ -24,6 +24,7 @@ function cfg(over: Partial<AppConfig>): AppConfig {
     ownerTokenGenerated: false,
     authMode: "owner_token",
     oauthStorePath: "/tmp/devspace-oauth-test.json",
+    editSessionStorePath: "/tmp/devspace-edit-sessions-test.json",
     enableDnsRebindingProtection: true,
     allowedHosts: [],
     allowedOrigins: [],

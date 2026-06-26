@@ -70,6 +70,9 @@ export interface AppConfig {
   authMode: "owner_token" | "oauth";
   /** Persisted OAuth client + refresh-token store (oauth mode). 0600. */
   oauthStorePath: string;
+  /** Persisted canvas edit-session store (survives restarts). 0600 — the ids
+   *  are capabilities. */
+  editSessionStorePath: string;
 
   /** DNS-rebinding protection inputs for the HTTP transport. */
   enableDnsRebindingProtection: boolean;
@@ -389,6 +392,8 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
   }
   const oauthStorePath =
     (env.OAUTH_STORE_PATH ?? "").trim() || join(process.cwd(), "data", "devspace-oauth.json");
+  const editSessionStorePath =
+    (env.EDIT_SESSION_STORE_PATH ?? "").trim() || join(process.cwd(), "data", "devspace-edit-sessions.json");
 
   // ---- DNS-rebinding / Host / Origin ----
   const enableDnsRebindingProtection = bool(
@@ -478,6 +483,7 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
     ownerTokenGenerated,
     authMode,
     oauthStorePath,
+    editSessionStorePath,
     enableDnsRebindingProtection,
     allowedHosts: finalHosts,
     allowedOrigins: finalOrigins,

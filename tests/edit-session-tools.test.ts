@@ -29,6 +29,7 @@ function cfg(extra: Record<string, string> = {}): AppConfig {
       ALLOWED_ROOTS: fx.root,
       OWNER_TOKEN: "x".repeat(40),
       PUBLIC_BASE_URL: "https://devspace.example.test",
+      EDIT_SESSION_STORE_PATH: join(fx.base, "edit-sessions.json"),
       ...extra,
     },
     warn: silent,
@@ -44,6 +45,20 @@ async function freePort(): Promise<number> {
     });
   });
 }
+
+it("persists edit sessions across a restart (reloads from disk)", async () => {
+  fx = await makeFixture();
+  const config = cfg();
+  const created = await new EditSessionManager(config, new SiteManager(config, fx.guard)).createCanvasProject({
+    title: "Persisted",
+  });
+
+  // Simulate a restart: a brand-new manager reading the same on-disk store.
+  const afterRestart = new EditSessionManager(config, new SiteManager(config, fx.guard));
+  const out = await afterRestart.scene(created.editSessionId); // throws "Unknown" if not persisted
+  expect(out.session.editSessionId).toBe(created.editSessionId);
+  expect(out.scene.version).toBe(1);
+});
 
 it("creates an editable canvas project and saves human edits as a new version", async () => {
   fx = await makeFixture();
