@@ -115,6 +115,14 @@ it("requires the edit-session header before saving through the browser route", a
     server = app.listen(port, "127.0.0.1", () => resolve());
   });
 
+  const editorPage = await (await fetch(`http://127.0.0.1:${port}/edit-sessions/${project.editSessionId}/`)).text();
+  const scripts = [...editorPage.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1] ?? "");
+  expect(scripts.length).toBeGreaterThan(0);
+  for (const script of scripts) {
+    expect(() => new Function(script)).not.toThrow();
+  }
+  expect(editorPage).not.toContain("delete.onclick");
+
   const missingHeader = await fetch(`http://127.0.0.1:${port}/edit-sessions/${project.editSessionId}/save`, {
     method: "POST",
     headers: { "content-type": "application/json" },

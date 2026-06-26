@@ -289,6 +289,17 @@ function editHtml(session: EditSession): string {
     const canvas = document.getElementById("canvas");
     const statusEl = document.getElementById("status");
     const editor = document.getElementById("editor");
+    const addRectBtn = document.getElementById("addRect");
+    const addTextBtn = document.getElementById("addText");
+    const deleteBtn = document.getElementById("delete");
+    const saveBtn = document.getElementById("save");
+    const fields = {
+      text: document.getElementById("text"),
+      fill: document.getElementById("fill"),
+      stroke: document.getElementById("stroke"),
+      color: document.getElementById("color"),
+      fontSize: document.getElementById("fontSize")
+    };
     let scene = null, selected = null, action = null;
     const setStatus = (text) => { statusEl.textContent = text; };
     const px = (v) => Math.round(v) + "px";
@@ -321,11 +332,11 @@ function editHtml(session: EditSession): string {
       const n = selectedNode();
       editor.classList.toggle("open", !!n);
       if (!n) return;
-      text.value = n.text || "";
-      fill.value = n.fill || "";
-      stroke.value = n.stroke || "";
-      color.value = n.color || "";
-      fontSize.value = n.fontSize || "";
+      fields.text.value = n.text || "";
+      fields.fill.value = n.fill || "";
+      fields.stroke.value = n.stroke || "";
+      fields.color.value = n.color || "";
+      fields.fontSize.value = n.fontSize || "";
     }
     function start(event, id, mode){
       event.preventDefault();
@@ -353,18 +364,18 @@ function editHtml(session: EditSession): string {
         : { id:"node-" + Math.random().toString(36).slice(2,8), type, x:80, y:80, width:220, height:140, fill:"#ffffff", stroke:"#d6ddd8" };
       scene.nodes.push(node); selected = node.id; render();
     }
-    addRect.onclick = () => add("rect");
-    addText.onclick = () => add("text");
-    delete.onclick = () => { if (!selected) return; scene.nodes = scene.nodes.filter(n => n.id !== selected); selected = null; render(); };
+    addRectBtn.onclick = () => add("rect");
+    addTextBtn.onclick = () => add("text");
+    deleteBtn.onclick = () => { if (!selected) return; scene.nodes = scene.nodes.filter(n => n.id !== selected); selected = null; render(); };
     for (const id of ["text","fill","stroke","color","fontSize"]) {
-      document.getElementById(id).addEventListener("input", () => {
+      fields[id].addEventListener("input", () => {
         const n = selectedNode(); if (!n) return;
-        if (id === "fontSize") n[id] = Number(fontSize.value) || 24;
-        else n[id] = document.getElementById(id).value;
+        if (id === "fontSize") n[id] = Number(fields.fontSize.value) || 24;
+        else n[id] = fields[id].value;
         render();
       });
     }
-    save.onclick = async () => {
+    saveBtn.onclick = async () => {
       setStatus("Saving...");
       const res = await fetch("./save", { method:"POST", headers:{ "content-type":"application/json", "x-devspace-edit-session":sessionId }, body:JSON.stringify({ scene }) });
       const data = await res.json().catch(() => ({}));
