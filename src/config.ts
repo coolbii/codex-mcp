@@ -87,6 +87,12 @@ export interface AppConfig {
   enablePackageInstall: boolean;
   /** Nx app scaffolding runs project code, so it is opt-in too. */
   enableAppScaffold: boolean;
+  /** OpenPencil CLI bridge is external process control, so it is opt-in. */
+  enableOpenPencil: boolean;
+  /** Operator-configured OpenPencil CLI binary. Defaults to `op`. */
+  openPencilCli: string;
+  /** Local OpenPencil web/editor port to proxy into ChatGPT preview. */
+  openPencilPreviewPort: number;
 
   /** Extra credential-file glob patterns (DENY_PATHS) beyond the built-ins.
    *  Denied paths are refused by read_file and hidden from find/search. */
@@ -143,6 +149,21 @@ function int(value: string | undefined, fallback: number, name: string): number 
     throw new ConfigError(`${name} must be a non-negative integer, got "${value}"`);
   }
   return n;
+}
+
+function commandName(value: string | undefined, fallback: string, name: string): string {
+  const v = (value ?? fallback).trim();
+  if (!v || /[\x00\r\n]/.test(v)) throw new ConfigError(`${name} must be a command name or absolute path`);
+  if (v.includes("/") || v.includes("\\")) {
+    const abs = resolve(expandHome(v));
+    if (!existsSync(abs)) throw new ConfigError(`${name} does not exist: ${v}`);
+    if (!statSync(abs).isFile()) throw new ConfigError(`${name} is not a file: ${v}`);
+    return abs;
+  }
+  if (!/^[a-zA-Z0-9._-]+$/.test(v)) {
+    throw new ConfigError(`${name} must be a bare command name with letters, numbers, dot, underscore, or dash`);
+  }
+  return v;
 }
 
 function expandHome(p: string): string {
@@ -469,6 +490,14 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
       "Nx app scaffold tool ENABLED. Nx generators execute project dependencies and can mutate the workspace.",
     );
   }
+  const enableOpenPencil = bool(env.ENABLE_OPENPENCIL, false);
+  const openPencilCli = commandName(env.OPENPENCIL_CLI, "op", "OPENPENCIL_CLI");
+  const openPencilPreviewPort = int(env.OPENPENCIL_PREVIEW_PORT, 3000, "OPENPENCIL_PREVIEW_PORT");
+  if (enableOpenPencil) {
+    warn(
+      "OpenPencil CLI bridge ENABLED. This starts/controls the operator-trusted OpenPencil app through fixed argv; keep it off unless needed.",
+    );
+  }
 
   const config: AppConfig = {
     host,
@@ -492,6 +521,9 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
     logShellCommands: bool(env.LOG_SHELL_COMMANDS, false),
     enablePackageInstall,
     enableAppScaffold,
+    enableOpenPencil,
+    openPencilCli,
+    openPencilPreviewPort,
     denyPaths: csv(env.DENY_PATHS),
     secretScan: bool(env.SECRET_SCAN, true),
     maxReadBytes: int(env.MAX_READ_BYTES, 2_000_000, "MAX_READ_BYTES"),

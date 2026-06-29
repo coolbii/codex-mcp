@@ -200,6 +200,25 @@ workspace-local Nx dev server with fixed argv and proxies it through
 previews, this runs project code in a local dev server, so enable it only for
 workspaces where running generated app code is expected.
 
+## OpenPencil bridge
+
+`src/openpencil-tools.ts`. **Disabled unless `ENABLE_OPENPENCIL=1`**. This is a
+narrow bridge to the operator-trusted OpenPencil `op` CLI, not a general shell.
+The model never supplies the binary or arbitrary argv: DevSpace only exposes
+fixed subcommands (`status`, `start`, `open`, `save`, `read-nodes`, `selection`,
+`insert`, `update`, `replace`, `move`, `delete`, `design`, `get`), runs with
+`shell:false`, caps output, applies timeouts, and kills the process group on
+timeout.
+
+All file targets are workspace paths ending in `.op` and pass through the
+PathGuard before reaching `op`. Design prompts are passed on stdin (`op design
+- --file <path>`), and native node JSON for `insert` / `update` / `replace` is
+also passed on stdin, so model text is never interpolated into a command string
+or logged as argv. The `openpencil_lint_design` tool is a read-only wrapper over
+`read-nodes` plus deterministic in-process checks; it does not introduce a new
+CLI capability. This still controls an external desktop app as the local user,
+so keep it off unless OpenPencil is part of the intended workflow.
+
 ## Search / regex (ReDoS)
 
 `src/search-tools.ts`. Literal substring search is the default and is always

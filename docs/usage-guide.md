@@ -139,6 +139,44 @@ ChatGPT instead of Codex.
 | `install_packages` | ✗ | Optional. Enabled only with `ENABLE_PACKAGE_INSTALL=1`; ChatGPT infers registry packages, you approve the list, install scripts stay disabled. |
 | `create_app` | ✗ | Optional. Enabled only with `ENABLE_APP_SCAFFOLD=1`; scaffolds React/Next apps. Defaults to an isolated Nx + Next workspace. |
 | `start_app_preview` | ✗ | Optional. Enabled only with `ENABLE_APP_SCAFFOLD=1`; installs dependencies if needed, starts the app dev server, and renders a ChatGPT preview. |
+| `openpencil_*` | mixed | Optional. Enabled only with `ENABLE_OPENPENCIL=1`; controls the trusted OpenPencil `op` CLI with fixed argv and guarded `.op` paths. |
+
+Use `create_canvas_project` only for the built-in lightweight DevSpace editor.
+For the original OpenPencil/Figma-like manipulation UI, ask for OpenPencil
+explicitly so the assistant uses the `openpencil_*` native editor tools.
+`openpencil_preview` proxies the local OpenPencil web/editor UI into ChatGPT's
+preview iframe, using the port reported by `op status` when OpenPencil is
+already running. If ChatGPT blocks app-launch actions, use
+`openpencil_attach_preview`; it only attaches to an already-running OpenPencil
+instance. Edit there, then save back with `openpencil_save`.
+
+For `.op` files, prefer native OpenPencil operations over raw JSON writes:
+
+- To show an existing document: `openpencil_open` then `openpencil_attach_preview`.
+- To generate or modify native layers: use `openpencil_insert`,
+  `openpencil_update`, `openpencil_replace`, `openpencil_move`, and
+  `openpencil_delete` against the live canvas or an existing `.op` file.
+- Before saving or attaching preview: run `openpencil_lint_design`. Fix reported
+  errors such as `background-z-order` or `empty-frame` first.
+- Before generating a screen, define the product UI brief, component hierarchy,
+  token vocabulary, and expected states. Follow
+  [openpencil-design-guidelines.md](openpencil-design-guidelines.md) so the result
+  is a professional editable design, not a generic AI wireframe.
+- For serious product design work, build a full design package rather than a
+  single screen: brief, reference audit, information architecture, user flows,
+  foundations, components, state matrix, screens, responsive variants, review
+  notes, and handoff. Follow
+  [openpencil-design-harness.md](openpencil-design-harness.md).
+- To find node ids before edits: use `openpencil_read_nodes` or
+  `openpencil_selection`.
+- To preserve human edits: `openpencil_save`.
+- To verify a file: `openpencil_get`.
+- Do not treat `openpencil_design` as a natural-language brief endpoint; the
+  upstream `op design` command expects OpenPencil's own structured DSL.
+- Do not use `write_file` / `edit_file` to create a new `.op` unless repairing
+  the raw file is explicitly requested. If raw repair is unavoidable, keep the
+  native shape `{ version, name, pages, children }`; canvas nodes live under
+  `pages[].children`, while top-level `children` is usually `[]`.
 
 Generated site previews are written under
 `<first ALLOWED_ROOTS>/devspace-sites/<siteId>/` and served at

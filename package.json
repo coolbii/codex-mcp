@@ -14,9 +14,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "fetch-fonts": "node scripts/fetch-fonts.mjs",
     "dev:http": "node --env-file-if-exists=.env --import tsx --watch src/bin/http.ts",
+    "dev:http:openpencil": "ENABLE_OPENPENCIL=1 OPENPENCIL_CLI=${OPENPENCIL_CLI:-op} node --env-file-if-exists=.env --import tsx --watch src/bin/http.ts",
     "dev:stdio": "node --env-file-if-exists=.env --import tsx src/bin/stdio.ts",
-    "start:http": "node dist/bin/http.js",
+    "start:http": "node --env-file-if-exists=.env dist/bin/http.js",
+    "start:http:openpencil": "npm run build && ENABLE_OPENPENCIL=1 OPENPENCIL_CLI=${OPENPENCIL_CLI:-op} node --env-file-if-exists=.env dist/bin/http.js",
     "start:stdio": "node dist/bin/stdio.js",
     "test": "vitest run",
     "test:watch": "vitest"
@@ -38,6 +41,7 @@
     "vitest": "^3.2.6"
   },
   "optionalDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "re2": "^1.24.1"
   }
 }

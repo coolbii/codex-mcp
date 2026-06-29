@@ -28,6 +28,24 @@ import { audit } from "./audit-log.js";
 import { SiteManager, SITE_ARCHETYPES } from "./site-tools.js";
 import { SecretGuard } from "./secret-guard.js";
 import { EditSessionManager } from "./edit-session-tools.js";
+import { OpenPencilPreviewManager } from "./openpencil-preview-tools.js";
+import {
+  openPencilDesign,
+  openPencilDelete,
+  openPencilGet,
+  openPencilInsert,
+  openPencilLintDesign,
+  openPencilMove,
+  openPencilOpen,
+  openPencilReadNodes,
+  openPencilReplace,
+  openPencilSave,
+  openPencilScreenshot,
+  openPencilSelection,
+  openPencilStart,
+  openPencilStatus,
+  openPencilUpdate,
+} from "./openpencil-tools.js";
 
 const SERVER_NAME = "devspace";
 const SERVER_VERSION = "0.1.0";
@@ -52,6 +70,17 @@ const SITE_DESIGN_DIRECTION =
   "Prefer quiet typography, clear hierarchy, compact sections, restrained color, real content structure, accessible contrast, " +
   "8px-or-less radii, stable responsive layout, and complete HTML/CSS/JS files. " +
   "Prefer choosing an archetype and omitting raw html/css unless the user explicitly asks for custom code.";
+const OPENPENCIL_AUTHORING_GUIDANCE =
+  "OpenPencil .op authoring — staged, gated workflow; do NOT jump straight to drawing, and do not hand-write/patch raw .op JSON unless the user asks for raw-file repair. " +
+  "1) CLARIFY FIRST. Before any openpencil_insert, ask the user and WAIT for answers: (a) who is the user and the one job; (b) surface + viewport(s); (c) three adjectives for the feel (not 'modern'); (d) reference source (Figma/URL/screenshots) to extract structure+tokens from, not copy; (e) existing brand tokens, or should you propose a set for approval; (f) which components are in scope; (g) which screens; (h) which of the 10 states matter; (i) is the deliverable a full design package or a single screen. Summarize the answers as a one-paragraph Brief and get an explicit 'go'. " +
+  "2) FOUNDATIONS BEFORE SCREENS. Define color/type/spacing/radius tokens as named foundation layers and reuse them everywhere; no ad-hoc per-screen values. " +
+  "3) BUILD NODE-BY-NODE with openpencil_insert/update/move/replace (prefer this over op design, which you cannot organize or fix). Organize nodes as Screen > Foundations/Components/Layout/Content/States with semantic layer names. " +
+  "4) For a design PACKAGE (not a single screen), stack 11 section bands top-to-bottom, each wrapped in a frame named 'Section / NN <Title>' (00 Brief, 01 Reference Audit, 02 Information Architecture, 03 User Flows, 04 Foundations, 05 Components, 06 State Matrix, 07 Screens, 08 Responsive, 09 Review Notes, 10 Handoff). Each band carries a VISIBLE COLORED bar: a full-width 'Banner BG' rectangle as the LAST child in the band's category color (e.g. 00 slate #1F2937, 01 violet #5B21B6, 04 Foundations teal #0F766E, 06 State Matrix amber #B45309, 07 Screens rose #BE123C, 10 cyan #0E7490), plus 'Index Chip'+'Index Number', a white 'Section Title', and a 'Section Subtitle'. Band 06 is a real grid: a 'Matrix / Header Row' with the 10 state headers, then 'Matrix / Row / <Component>' rows whose 'Matrix Cell / <Component> / <State>' cells each hold a component variant or a 'n/a — reason' text (never blank). " +
+  '5) Every text node needs an explicit bundled fontFamily ("Inter" for English UI, "Noto Sans SC" for Chinese UI) plus a concrete fontWeight; size text to its box, wrap long headlines, and prevent overlap. Put full-frame backgrounds as the LAST child of their parent (openpencil_move index 999). ' +
+  "6) VISUAL REVIEW BEFORE SAVING. Run openpencil_screenshot to get a PNG of the canvas/each screen and LOOK at it: any overlap, clipping, or misalignment? are the section bars visible and COLORED? are all matrix cells filled? is the primary action obvious (squint test)? does it look professional and good to a human, matching the three adjectives? Fix problems with openpencil_update/openpencil_move and screenshot again. openpencil_save is gated on having run openpencil_screenshot first. " +
+  "7) Run openpencil_lint_design and fix errors before saving — missing-font-family, background-z-order, empty-frame, missing-section-banners, empty-state-cell — then verify any .op write with openpencil_get. " +
+  "When the user says 'Apple-like', they mean file organization, section/state bars, component/state coverage, and handoff quality — NOT Apple visual style. Treat reference images/sites as research: extract structure, flow, tokens, and component vocabulary; do not copy the visual design. Avoid generic AI styling, decorative gradients/blobs, vague hero copy, unreadable placeholder text, random cards, inconsistent controls, and flat gray wireframes unless the user asks for wireframes. " +
+  "If raw .op JSON must be created or repaired, keep the native shape: top-level { version, name, pages, children } with the active canvas under pages[].children (root children usually an empty array); nodes use id, type, name, x, y, width, height, fill, stroke, children.";
 
 const entrySchema = z.object({
   name: z.string(),
@@ -103,6 +132,49 @@ const appPreviewSchema = z.object({
   stdout: z.string(),
   stderr: z.string(),
   durationMs: z.number().int().nonnegative(),
+});
+const processResultSchema = z.object({
+  command: z.string(),
+  args: z.array(z.string()),
+  cwd: z.string(),
+  exitCode: z.number().int().nullable(),
+  signal: z.string().nullable(),
+  timedOut: z.boolean(),
+  truncated: z.boolean(),
+  stdout: z.string(),
+  stderr: z.string(),
+  durationMs: z.number().int().nonnegative(),
+});
+const openPencilStatusSchema = processResultSchema.extend({
+  enabled: z.boolean(),
+});
+const openPencilPreviewSchema = z.object({
+  previewId: z.string(),
+  title: z.string(),
+  previewUrl: z.string(),
+  localUrl: z.string(),
+  port: z.number().int().positive(),
+  ready: z.boolean(),
+  stdout: z.string(),
+  stderr: z.string(),
+  durationMs: z.number().int().nonnegative(),
+  siteId: z.string().optional(),
+  latestVersion: z.string().nullable().optional(),
+});
+const openPencilLintIssueSchema = z.object({
+  severity: z.enum(["error", "warning"]),
+  code: z.string(),
+  message: z.string(),
+  nodeId: z.string().optional(),
+  nodeName: z.string().optional(),
+  fix: z.string().optional(),
+});
+const openPencilLintSchema = processResultSchema.extend({
+  ok: z.boolean(),
+  checkedFrames: z.number().int().nonnegative(),
+  visibleElementNodes: z.number().int().nonnegative(),
+  visibleTextNodes: z.number().int().nonnegative(),
+  issues: z.array(openPencilLintIssueSchema),
 });
 const editSessionSchema = z.object({
   editSessionId: z.string(),
@@ -273,6 +345,7 @@ export function buildMcpServer(
   registry = new WorkspaceRegistry(guard, config.allowedRoots),
   appPreviewManager = new AppPreviewManager(config, guard),
   editSessionManager?: EditSessionManager,
+  openPencilPreviewManager = new OpenPencilPreviewManager(config),
 ): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
@@ -295,7 +368,8 @@ export function buildMcpServer(
         "this conversation without first showing show_diff and getting explicit confirmation; " +
         "never write outside the workspace you were given. " +
         "For create_site / create_project and their updates: " +
-        SITE_DESIGN_DIRECTION,
+        SITE_DESIGN_DIRECTION +
+        " If the user asks for OpenPencil, the original OpenPencil interface, native design editing, or Figma-like manipulation handles, prefer the openpencil_* tools over create_canvas_project. create_canvas_project is only a lightweight DevSpace fallback editor.",
     },
   );
 
@@ -336,6 +410,10 @@ export function buildMcpServer(
   const WRITE = { readOnlyHint: false, destructiveHint: true, openWorldHint: false } as const;
   const secretGuard = new SecretGuard({ extraDenyPatterns: config.denyPaths, scanContent: config.secretScan });
   const siteManager = new SiteManager(config, guard);
+  // Visual-review gate: openpencil_save refuses until the model has rendered and
+  // looked at the design with openpencil_screenshot at least once this session
+  // (per workspace). The model can override with force:true.
+  const visualReviewedWorkspaces = new Set<string>();
   const canvasSessions = editSessionManager ?? new EditSessionManager(config, siteManager);
   const widgetOrigin = config.publicBaseUrl ?? `http://${config.host}:${config.port}`;
   const widgetMeta = {
@@ -869,7 +947,8 @@ export function buildMcpServer(
       description:
         "Create a versioned static project backed by structured canvas JSON and return an edit-session URL rendered in ChatGPT. " +
         "Use this when the user wants to directly drag, resize, and edit items on the preview canvas. " +
-        "The browser editor can only save the bound scene/project for this session.",
+        "The browser editor can only save the bound scene/project for this session. " +
+        "Do not use this when the user asks for OpenPencil, native design editing, or a Figma-like full editor; use openpencil_* tools instead.",
       inputSchema: {
         title: z.string().min(1).max(120),
         scene: canvasSceneSchema
@@ -912,7 +991,8 @@ export function buildMcpServer(
       title: "Create canvas edit session",
       description:
         "Create an unguessable browser edit session for an existing canvas project. " +
-        "The returned previewUrl opens the editor; sitePreviewUrl is the normal read-only rendered project preview.",
+        "The returned previewUrl opens the lightweight DevSpace editor; sitePreviewUrl is the normal read-only rendered project preview. " +
+        "Do not use this for OpenPencil/native-editor workflows.",
       inputSchema: {
         projectId: z.string().describe("The project id returned by create_canvas_project or create_project."),
         title: z.string().min(1).max(120).optional(),
@@ -991,7 +1071,8 @@ export function buildMcpServer(
       description:
         "Create or overwrite a file with full contents. Returns a diff. Set createOnly to refuse overwriting. " +
         "Only write files the user's current request needs. Before overwriting or deleting a file you did NOT " +
-        "create this session, preview with show_diff and get explicit confirmation. Never write outside the workspace.",
+        "create this session, preview with show_diff and get explicit confirmation. Never write outside the workspace. " +
+        OPENPENCIL_AUTHORING_GUIDANCE,
       inputSchema: {
         workspaceId: z.string(),
         path: z.string(),
@@ -1025,7 +1106,8 @@ export function buildMcpServer(
       title: "Edit file",
       description:
         "Apply exact-string replacements. Each oldText must occur exactly once unless replaceAll is set. Returns a diff. " +
-        "Keep edits scoped to the user's request; don't make unrelated or destructive changes to files you didn't create.",
+        "Keep edits scoped to the user's request; don't make unrelated or destructive changes to files you didn't create. " +
+        OPENPENCIL_AUTHORING_GUIDANCE,
       inputSchema: {
         workspaceId: z.string(),
         path: z.string(),
@@ -1247,6 +1329,587 @@ export function buildMcpServer(
               siteId: preview.previewId,
               latestVersion: null,
             },
+          );
+        }),
+    );
+  }
+
+  if (config.enableOpenPencil) {
+    server.registerTool(
+      "openpencil_attach_preview",
+      {
+        title: "Attach OpenPencil preview",
+        description:
+          "Attach to an already-running OpenPencil local web/editor UI and render it inside the ChatGPT preview iframe. This read-only tool never starts OpenPencil, opens files, or writes files; use it when platform safety blocks app-launch actions.",
+        inputSchema: {
+          workspaceId: z.string(),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: openPencilPreviewSchema,
+        annotations: { ...RO, title: "Attach OpenPencil preview" },
+        _meta: {
+          "openai/outputTemplate": SITE_WIDGET_URI,
+          "openai/toolInvocation/invoking": "Attaching OpenPencil preview",
+          "openai/toolInvocation/invoked": "OpenPencil preview attached",
+          ui: { resourceUri: SITE_WIDGET_URI },
+        },
+      },
+      async ({ workspaceId, timeoutMs }) =>
+        invoke("openpencil_attach_preview", { workspaceId }, async () => {
+          registry.get(workspaceId);
+          const preview = await openPencilPreviewManager.attach({
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          });
+          return previewResult(
+            `OpenPencil preview attached\nPreview: ${preview.previewUrl}\nLocal: ${preview.localUrl}`,
+            {
+              ...preview,
+              siteId: preview.previewId,
+              latestVersion: null,
+            },
+          );
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_preview",
+      {
+        title: "Preview OpenPencil editor",
+        description:
+          "Start or attach to OpenPencil's local web/editor UI and render it inside the ChatGPT preview iframe through a DevSpace capability proxy. Use this when the user expects to manipulate OpenPencil directly inside ChatGPT preview.",
+        inputSchema: {
+          workspaceId: z.string(),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: openPencilPreviewSchema,
+        annotations: { ...WRITE, title: "Preview OpenPencil editor" },
+        _meta: {
+          "openai/outputTemplate": SITE_WIDGET_URI,
+          "openai/toolInvocation/invoking": "Opening OpenPencil preview",
+          "openai/toolInvocation/invoked": "OpenPencil preview ready",
+          ui: { resourceUri: SITE_WIDGET_URI },
+        },
+      },
+      async ({ workspaceId, timeoutMs }) =>
+        invoke("openpencil_preview", { workspaceId }, async () => {
+          registry.get(workspaceId);
+          const preview = await openPencilPreviewManager.start({
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          });
+          return previewResult(
+            `OpenPencil preview ready\nPreview: ${preview.previewUrl}\nLocal: ${preview.localUrl}`,
+            {
+              ...preview,
+              siteId: preview.previewId,
+              latestVersion: null,
+            },
+          );
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_status",
+      {
+        title: "OpenPencil status",
+        description: "Check whether the configured OpenPencil app/CLI bridge is reachable.",
+        inputSchema: {
+          workspaceId: z.string(),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: openPencilStatusSchema,
+        annotations: { ...RO, title: "OpenPencil status" },
+      },
+      async ({ workspaceId, timeoutMs }) =>
+        invoke("openpencil_status", { workspaceId }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilStatus(config, ws, timeoutMs);
+          return text(
+            `$ ${r.command} ${r.args.join(" ")}\n[${r.timedOut ? "TIMED OUT" : r.signal ? `killed (${r.signal})` : `exit ${r.exitCode}`}, ${r.durationMs}ms]\n` +
+              (r.stdout ? `\n--- stdout ---\n${r.stdout}` : "") +
+              (r.stderr ? `\n--- stderr ---\n${r.stderr}` : ""),
+            r as unknown as Record<string, unknown>,
+          );
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_start",
+      {
+        title: "Start OpenPencil",
+        description: "Start the configured OpenPencil desktop app through the operator-trusted `op` CLI.",
+        inputSchema: {
+          workspaceId: z.string(),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: processResultSchema,
+        annotations: { ...WRITE, title: "Start OpenPencil" },
+      },
+      async ({ workspaceId, timeoutMs }) =>
+        invoke("openpencil_start", { workspaceId }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilStart(config, ws, timeoutMs);
+          return text(`$ ${r.command} ${r.args.join(" ")}\n[exit ${r.exitCode}, ${r.durationMs}ms]`, r as unknown as Record<string, unknown>);
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_open",
+      {
+        title: "Open OpenPencil file",
+        description:
+          "Open a guarded workspace .op file in the native OpenPencil app/editor. Use this before attach_preview when a specific document should be shown. " +
+          OPENPENCIL_AUTHORING_GUIDANCE,
+        inputSchema: {
+          workspaceId: z.string(),
+          path: z.string().describe("Workspace-relative .op file path."),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: processResultSchema,
+        annotations: { ...WRITE, title: "Open OpenPencil file" },
+      },
+      async ({ workspaceId, path, timeoutMs }) =>
+        invoke("openpencil_open", { workspaceId, path }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilOpen(config, guard, ws, path, timeoutMs);
+          return text(`Opened ${path}\n[exit ${r.exitCode}, ${r.durationMs}ms]`, r as unknown as Record<string, unknown>);
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_save",
+      {
+        title: "Save OpenPencil file",
+        description:
+          "Save the current OpenPencil canvas/document to a guarded workspace .op file. Use after the human edits in OpenPencil. " +
+          "Prefer this over raw write_file/edit_file for .op output. " +
+          "GATE: this refuses unless you have run openpencil_screenshot and visually reviewed the design at least once this session (pass force:true only to bypass after a deliberate human decision). " +
+          OPENPENCIL_AUTHORING_GUIDANCE,
+        inputSchema: {
+          workspaceId: z.string(),
+          path: z.string().describe("Workspace-relative .op destination path."),
+          force: z
+            .boolean()
+            .optional()
+            .describe("Bypass the visual-review gate. Only set this when the user explicitly accepts saving without a screenshot review."),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: processResultSchema,
+        annotations: { ...WRITE, title: "Save OpenPencil file" },
+      },
+      async ({ workspaceId, path, force, timeoutMs }) =>
+        invoke("openpencil_save", { workspaceId, path }, async () => {
+          const ws = registry.get(workspaceId);
+          if (!force && !visualReviewedWorkspaces.has(workspaceId)) {
+            return errorResult(
+              "openpencil_save blocked by the visual-review gate: run openpencil_screenshot first and confirm the design looks correct (no overlap/clipping, section bars visible and colored, matrix cells filled, primary action clear, professional to a human). " +
+                "Then call openpencil_save again, or pass force:true to bypass after a deliberate decision.",
+            );
+          }
+          const r = await openPencilSave(config, guard, ws, path, timeoutMs);
+          return text(`Saved ${path}\n[exit ${r.exitCode}, ${r.durationMs}ms]`, r as unknown as Record<string, unknown>);
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_design",
+      {
+        title: "Design in OpenPencil",
+        description:
+          "Use OpenPencil's native `op design - --file <path>` flow only when the user wants OpenPencil itself to apply a structured design operation. " +
+          "This is not a generic JSON writer. Do not use it just to attach preview, inspect, or save current human edits. " +
+          "The prompt is passed on stdin, never as argv or shell text. Follow with openpencil_get to validate and openpencil_open/openpencil_attach_preview for human editing. " +
+          OPENPENCIL_AUTHORING_GUIDANCE,
+        inputSchema: {
+          workspaceId: z.string(),
+          path: z.string().describe("Workspace-relative .op file path to create or update."),
+          prompt: z.string().min(1).max(200000).describe(
+            "OpenPencil design instruction. Prefer concise, structured operation intent; do not paste raw invalid .op JSON.",
+          ),
+          canvasWidth: z.number().int().min(320).max(7680).optional(),
+          postProcess: z.boolean().optional(),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: processResultSchema,
+        annotations: { ...WRITE, title: "Design in OpenPencil" },
+      },
+      async ({ workspaceId, path, prompt, canvasWidth, postProcess, timeoutMs }) =>
+        invoke("openpencil_design", { workspaceId, path }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilDesign(config, guard, ws, {
+            path,
+            prompt,
+            ...(canvasWidth !== undefined ? { canvasWidth } : {}),
+            ...(postProcess !== undefined ? { postProcess } : {}),
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          });
+          return text(`Designed ${path}\n[exit ${r.exitCode}, ${r.durationMs}ms]`, r as unknown as Record<string, unknown>);
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_read_nodes",
+      {
+        title: "Read OpenPencil nodes",
+        description:
+          "Read native OpenPencil nodes from the live canvas or a guarded workspace .op file. Use this to inspect ids/parents before openpencil_update, openpencil_replace, or openpencil_delete.",
+        inputSchema: {
+          workspaceId: z.string(),
+          path: z.string().optional().describe("Optional workspace-relative .op file path. Omit to read the live OpenPencil canvas."),
+          ids: z.array(z.string().min(1).max(200)).max(200).optional().describe("Optional node ids to read."),
+          depth: z.number().int().min(0).max(50).optional(),
+          vars: z.boolean().optional(),
+          page: z.string().min(1).max(200).optional(),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: processResultSchema,
+        annotations: { ...RO, title: "Read OpenPencil nodes" },
+      },
+      async ({ workspaceId, path, ids, depth, vars, page, timeoutMs }) =>
+        invoke("openpencil_read_nodes", { workspaceId, ...(path !== undefined ? { path } : {}) }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilReadNodes(config, guard, ws, {
+            ...(path !== undefined ? { path } : {}),
+            ...(ids !== undefined ? { ids } : {}),
+            ...(depth !== undefined ? { depth } : {}),
+            ...(vars !== undefined ? { vars } : {}),
+            ...(page !== undefined ? { page } : {}),
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          });
+          return text(
+            `$ ${r.command} ${r.args.join(" ")}\n[${r.timedOut ? "TIMED OUT" : r.signal ? `killed (${r.signal})` : `exit ${r.exitCode}`}, ${r.durationMs}ms]\n` +
+              (r.stdout ? `\n--- stdout ---\n${r.stdout}` : "") +
+              (r.stderr ? `\n--- stderr ---\n${r.stderr}` : ""),
+            r as unknown as Record<string, unknown>,
+          );
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_selection",
+      {
+        title: "Read OpenPencil selection",
+        description: "Read the current OpenPencil live canvas selection, including selected node ids and active page.",
+        inputSchema: {
+          workspaceId: z.string(),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: processResultSchema,
+        annotations: { ...RO, title: "Read OpenPencil selection" },
+      },
+      async ({ workspaceId, timeoutMs }) =>
+        invoke("openpencil_selection", { workspaceId }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilSelection(config, ws, timeoutMs);
+          return text(
+            `$ ${r.command} ${r.args.join(" ")}\n[${r.timedOut ? "TIMED OUT" : r.signal ? `killed (${r.signal})` : `exit ${r.exitCode}`}, ${r.durationMs}ms]\n` +
+              (r.stdout ? `\n--- stdout ---\n${r.stdout}` : "") +
+              (r.stderr ? `\n--- stderr ---\n${r.stderr}` : ""),
+            r as unknown as Record<string, unknown>,
+          );
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_lint_design",
+      {
+        title: "Lint OpenPencil design",
+        description:
+          "Read the live canvas or a guarded .op file and run deterministic design-structure checks before saving or previewing. " +
+          "This catches empty frames, full-frame backgrounds that cover content, tiny/empty text, generic layer names, and missing component organization. " +
+          "If it returns errors, fix them with openpencil_move/openpencil_update/openpencil_insert before calling openpencil_save or attaching preview.",
+        inputSchema: {
+          workspaceId: z.string(),
+          path: z.string().optional().describe("Optional workspace-relative .op file path. Omit to lint the live OpenPencil canvas."),
+          ids: z.array(z.string().min(1).max(200)).max(200).optional().describe("Optional root node ids to lint."),
+          page: z.string().min(1).max(200).optional(),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: openPencilLintSchema,
+        annotations: { ...RO, title: "Lint OpenPencil design" },
+      },
+      async ({ workspaceId, path, ids, page, timeoutMs }) =>
+        invoke("openpencil_lint_design", { workspaceId, ...(path !== undefined ? { path } : {}) }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilLintDesign(config, guard, ws, {
+            ...(path !== undefined ? { path } : {}),
+            ...(ids !== undefined ? { ids } : {}),
+            ...(page !== undefined ? { page } : {}),
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          });
+          const issueText = r.issues.length
+            ? r.issues.map((issue) => `- [${issue.severity}] ${issue.code}: ${issue.message}${issue.fix ? ` Fix: ${issue.fix}` : ""}`).join("\n")
+            : "No design lint issues.";
+          return text(
+            `OpenPencil design lint: ${r.ok ? "ok" : "failed"}\n` +
+              `Frames: ${r.checkedFrames}; elements: ${r.visibleElementNodes}; text: ${r.visibleTextNodes}\n` +
+              issueText,
+            r as unknown as Record<string, unknown>,
+          );
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_screenshot",
+      {
+        title: "Screenshot OpenPencil design",
+        description:
+          "Render the live OpenPencil canvas or a guarded .op file (optionally a single frame by id) to a PNG and return it as an image so you can SEE the design and judge its visual quality before saving. " +
+          "This is an approximate raster of the authored geometry (not a pixel-perfect editor capture), which faithfully reveals overlap, clipping, misalignment, missing/uncolored section bars, empty matrix cells, weak contrast, and crowding. " +
+          "After it returns, LOOK at the image and score it: any overlap/clipping/misalignment? are the section bars visible and colored? are all state-matrix cells filled? is the primary action obvious (squint test)? does it look professional and good to a human, matching the agreed adjectives? " +
+          "Fix problems with openpencil_update/openpencil_move and screenshot again. Running this unlocks the openpencil_save visual-review gate.",
+        inputSchema: {
+          workspaceId: z.string(),
+          path: z.string().optional().describe("Optional workspace-relative .op file path. Omit to screenshot the live OpenPencil canvas."),
+          id: z.string().min(1).max(200).optional().describe("Optional node id to crop to (e.g. a single Screen or Section frame). Omit to render the whole canvas."),
+          page: z.string().min(1).max(200).optional(),
+          maxDimension: z.number().int().min(64).max(4096).optional().describe("Longest output edge in px; the render is scaled to fit. Default 1600."),
+          background: z.string().min(1).max(32).optional().describe("Background color behind the design (default #FFFFFF)."),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: {
+          targetId: z.string().nullable(),
+          targetName: z.string().nullable(),
+          width: z.number(),
+          height: z.number(),
+          byteLength: z.number(),
+          nodeCount: z.number(),
+        },
+        annotations: { ...RO, title: "Screenshot OpenPencil design" },
+        _meta: {
+          "openai/toolInvocation/invoking": "Rendering OpenPencil screenshot",
+          "openai/toolInvocation/invoked": "OpenPencil screenshot ready",
+        },
+      },
+      async ({ workspaceId, path, id, page, maxDimension, background, timeoutMs }) =>
+        invoke("openpencil_screenshot", { workspaceId, ...(path !== undefined ? { path } : {}) }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilScreenshot(config, guard, ws, {
+            ...(path !== undefined ? { path } : {}),
+            ...(id !== undefined ? { id } : {}),
+            ...(page !== undefined ? { page } : {}),
+            ...(maxDimension !== undefined ? { maxDimension } : {}),
+            ...(background !== undefined ? { background } : {}),
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          });
+          visualReviewedWorkspaces.add(workspaceId);
+          const summary =
+            `OpenPencil screenshot: ${r.targetName ?? "canvas"} — ${r.width}×${r.height}px, ${r.nodeCount} nodes.\n` +
+            "Visually review now: any overlap, clipping, or misalignment? Are the section bars visible and COLORED? " +
+            "Are all state-matrix cells filled? Is the primary action obvious? Does it look professional and good to a human? " +
+            "Fix problems with openpencil_update/openpencil_move and screenshot again; only call openpencil_save once it looks right.";
+          return {
+            content: [
+              { type: "text", text: summary },
+              { type: "image", data: r.pngBase64, mimeType: "image/png" },
+            ],
+            structuredContent: {
+              targetId: r.targetId,
+              targetName: r.targetName,
+              width: r.width,
+              height: r.height,
+              byteLength: r.byteLength,
+              nodeCount: r.nodeCount,
+            },
+          };
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_insert",
+      {
+        title: "Insert OpenPencil node",
+        description:
+          "Insert a native OpenPencil node into the live canvas or a guarded .op file using `op insert`. Use this for AI-created design layers instead of raw write_file/edit_file. " +
+          "Pass JSON node objects such as { type:'frame', name, x, y, width, height, fill, stroke, children } or text nodes with { type:'text', content, fontSize }. " +
+          "The node JSON is passed on stdin, never argv. After inserting a full design, call openpencil_save and openpencil_read_nodes/openpencil_get to verify. " +
+          OPENPENCIL_AUTHORING_GUIDANCE,
+        inputSchema: {
+          workspaceId: z.string(),
+          node: z.unknown().describe("OpenPencil node JSON to insert. Prefer one frame containing child layers for a complete screen."),
+          path: z.string().optional().describe("Optional workspace-relative .op file path. Omit to insert into the live OpenPencil canvas."),
+          parent: z.string().min(1).max(200).optional(),
+          index: z.number().int().min(0).max(100000).optional(),
+          page: z.string().min(1).max(200).optional(),
+          postProcess: z.boolean().optional(),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: processResultSchema,
+        annotations: { ...WRITE, title: "Insert OpenPencil node" },
+      },
+      async ({ workspaceId, node, path, parent, index, page, postProcess, timeoutMs }) =>
+        invoke("openpencil_insert", { workspaceId, ...(path !== undefined ? { path } : {}) }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilInsert(config, guard, ws, {
+            node,
+            ...(path !== undefined ? { path } : {}),
+            ...(parent !== undefined ? { parent } : {}),
+            ...(index !== undefined ? { index } : {}),
+            ...(page !== undefined ? { page } : {}),
+            ...(postProcess !== undefined ? { postProcess } : {}),
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          });
+          return text(`Inserted OpenPencil node\n[exit ${r.exitCode}, ${r.durationMs}ms]`, r as unknown as Record<string, unknown>);
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_update",
+      {
+        title: "Update OpenPencil node",
+        description:
+          "Patch native OpenPencil node fields by id using `op update`. Inspect ids with openpencil_read_nodes or openpencil_selection first. The JSON patch is passed on stdin, never argv.",
+        inputSchema: {
+          workspaceId: z.string(),
+          id: z.string().min(1).max(200),
+          patch: z.unknown().describe("Partial OpenPencil node JSON fields to update, e.g. { x, y, width, height, fill, content }."),
+          path: z.string().optional().describe("Optional workspace-relative .op file path. Omit to update the live OpenPencil canvas."),
+          page: z.string().min(1).max(200).optional(),
+          postProcess: z.boolean().optional(),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: processResultSchema,
+        annotations: { ...WRITE, title: "Update OpenPencil node" },
+      },
+      async ({ workspaceId, id, patch, path, page, postProcess, timeoutMs }) =>
+        invoke("openpencil_update", { workspaceId, ...(path !== undefined ? { path } : {}) }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilUpdate(config, guard, ws, {
+            id,
+            patch,
+            ...(path !== undefined ? { path } : {}),
+            ...(page !== undefined ? { page } : {}),
+            ...(postProcess !== undefined ? { postProcess } : {}),
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          });
+          return text(`Updated OpenPencil node ${id}\n[exit ${r.exitCode}, ${r.durationMs}ms]`, r as unknown as Record<string, unknown>);
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_replace",
+      {
+        title: "Replace OpenPencil node",
+        description:
+          "Replace a native OpenPencil node by id using `op replace`. Use for substantial node rewrites after inspecting ids. The replacement node JSON is passed on stdin, never argv.",
+        inputSchema: {
+          workspaceId: z.string(),
+          id: z.string().min(1).max(200),
+          node: z.unknown().describe("Replacement OpenPencil node JSON."),
+          path: z.string().optional().describe("Optional workspace-relative .op file path. Omit to replace in the live OpenPencil canvas."),
+          page: z.string().min(1).max(200).optional(),
+          postProcess: z.boolean().optional(),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: processResultSchema,
+        annotations: { ...WRITE, title: "Replace OpenPencil node" },
+      },
+      async ({ workspaceId, id, node, path, page, postProcess, timeoutMs }) =>
+        invoke("openpencil_replace", { workspaceId, ...(path !== undefined ? { path } : {}) }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilReplace(config, guard, ws, {
+            id,
+            node,
+            ...(path !== undefined ? { path } : {}),
+            ...(page !== undefined ? { page } : {}),
+            ...(postProcess !== undefined ? { postProcess } : {}),
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          });
+          return text(`Replaced OpenPencil node ${id}\n[exit ${r.exitCode}, ${r.durationMs}ms]`, r as unknown as Record<string, unknown>);
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_move",
+      {
+        title: "Move OpenPencil node",
+        description:
+          "Move a native OpenPencil node to a parent and optional index using `op move`. Use this to fix layer order/z-index or regroup nodes after inspecting ids with openpencil_read_nodes. " +
+          "For full-frame background rectangles, move the background to the bottom layer if it covers visible UI.",
+        inputSchema: {
+          workspaceId: z.string(),
+          id: z.string().min(1).max(200),
+          parent: z.string().min(1).max(200),
+          index: z.number().int().min(0).max(100000).optional(),
+          path: z.string().optional().describe("Optional workspace-relative .op file path. Omit to move in the live OpenPencil canvas."),
+          page: z.string().min(1).max(200).optional(),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: processResultSchema,
+        annotations: { ...WRITE, title: "Move OpenPencil node" },
+      },
+      async ({ workspaceId, id, parent, index, path, page, timeoutMs }) =>
+        invoke("openpencil_move", { workspaceId, ...(path !== undefined ? { path } : {}) }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilMove(config, guard, ws, {
+            id,
+            parent,
+            ...(index !== undefined ? { index } : {}),
+            ...(path !== undefined ? { path } : {}),
+            ...(page !== undefined ? { page } : {}),
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          });
+          return text(`Moved OpenPencil node ${id}\n[exit ${r.exitCode}, ${r.durationMs}ms]`, r as unknown as Record<string, unknown>);
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_delete",
+      {
+        title: "Delete OpenPencil node",
+        description:
+          "Delete a native OpenPencil node by id using `op delete`. Inspect ids with openpencil_read_nodes or openpencil_selection first.",
+        inputSchema: {
+          workspaceId: z.string(),
+          id: z.string().min(1).max(200),
+          path: z.string().optional().describe("Optional workspace-relative .op file path. Omit to delete from the live OpenPencil canvas."),
+          page: z.string().min(1).max(200).optional(),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: processResultSchema,
+        annotations: { ...WRITE, title: "Delete OpenPencil node" },
+      },
+      async ({ workspaceId, id, path, page, timeoutMs }) =>
+        invoke("openpencil_delete", { workspaceId, ...(path !== undefined ? { path } : {}) }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilDelete(config, guard, ws, {
+            id,
+            ...(path !== undefined ? { path } : {}),
+            ...(page !== undefined ? { page } : {}),
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          });
+          return text(`Deleted OpenPencil node ${id}\n[exit ${r.exitCode}, ${r.durationMs}ms]`, r as unknown as Record<string, unknown>);
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_get",
+      {
+        title: "Inspect OpenPencil canvas",
+        description:
+          "Run OpenPencil's structured get command, optionally against a guarded workspace .op file. Use this after any .op write/save/design operation to verify OpenPencil can parse the result. " +
+          OPENPENCIL_AUTHORING_GUIDANCE,
+        inputSchema: {
+          workspaceId: z.string(),
+          path: z.string().optional().describe("Optional workspace-relative .op file path."),
+          query: z.string().max(200).optional().describe("Optional OpenPencil get query, e.g. selection or canvas."),
+          timeoutMs: z.number().int().min(1000).max(300000).optional(),
+        },
+        outputSchema: processResultSchema,
+        annotations: { ...RO, title: "Inspect OpenPencil canvas" },
+      },
+      async ({ workspaceId, path, query, timeoutMs }) =>
+        invoke("openpencil_get", { workspaceId, ...(path !== undefined ? { path } : {}) }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilGet(config, guard, ws, {
+            ...(path !== undefined ? { path } : {}),
+            ...(query !== undefined ? { query } : {}),
+            ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          });
+          return text(
+            `$ ${r.command} ${r.args.join(" ")}\n[${r.timedOut ? "TIMED OUT" : r.signal ? `killed (${r.signal})` : `exit ${r.exitCode}`}, ${r.durationMs}ms]\n` +
+              (r.stdout ? `\n--- stdout ---\n${r.stdout}` : "") +
+              (r.stderr ? `\n--- stderr ---\n${r.stderr}` : ""),
+            r as unknown as Record<string, unknown>,
           );
         }),
     );
