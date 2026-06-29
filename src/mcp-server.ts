@@ -34,6 +34,7 @@ import {
   openPencilDelete,
   openPencilGet,
   openPencilInsert,
+  openPencilInsertSectionBand,
   openPencilLintDesign,
   openPencilMove,
   openPencilOpen,
@@ -75,7 +76,7 @@ const OPENPENCIL_AUTHORING_GUIDANCE =
   "1) CLARIFY FIRST. Before any openpencil_insert, ask the user and WAIT for answers: (a) who is the user and the one job; (b) surface + viewport(s); (c) three adjectives for the feel (not 'modern'); (d) reference source (Figma/URL/screenshots) to extract structure+tokens from, not copy; (e) existing brand tokens, or should you propose a set for approval; (f) which components are in scope; (g) which screens; (h) which of the 10 states matter; (i) is the deliverable a full design package or a single screen. Summarize the answers as a one-paragraph Brief and get an explicit 'go'. " +
   "2) FOUNDATIONS BEFORE SCREENS. Define color/type/spacing/radius tokens as named foundation layers and reuse them everywhere; no ad-hoc per-screen values. " +
   "3) BUILD NODE-BY-NODE with openpencil_insert/update/move/replace (prefer this over op design, which you cannot organize or fix). Organize nodes as Screen > Foundations/Components/Layout/Content/States with semantic layer names. " +
-  "4) For a design PACKAGE (not a single screen), stack 11 section bands top-to-bottom, each wrapped in a frame named 'Section / NN <Title>' (00 Brief, 01 Reference Audit, 02 Information Architecture, 03 User Flows, 04 Foundations, 05 Components, 06 State Matrix, 07 Screens, 08 Responsive, 09 Review Notes, 10 Handoff). Each band carries a VISIBLE COLORED bar: a full-width 'Banner BG' rectangle as the LAST child in the band's category color (e.g. 00 slate #1F2937, 01 violet #5B21B6, 04 Foundations teal #0F766E, 06 State Matrix amber #B45309, 07 Screens rose #BE123C, 10 cyan #0E7490), plus 'Index Chip'+'Index Number', a white 'Section Title', and a 'Section Subtitle'. Band 06 is a real grid: a 'Matrix / Header Row' with the 10 state headers, then 'Matrix / Row / <Component>' rows whose 'Matrix Cell / <Component> / <State>' cells each hold a component variant or a 'n/a — reason' text (never blank). " +
+  "4) For a design PACKAGE (not a single screen), build the '00 Brief … 10 Handoff' rail with openpencil_insert_section_band — ONE call per section (00..10), into a .op file path. It reliably authors a lint-clean 'Section / NN <Title>' band (full-width colored Banner BG as the last child in the category color, Index Chip+Number, white Section Title, optional Section Subtitle) and auto-stacks bands down the page. Do NOT hand-build bands with raw write_file or openpencil_insert (op insert rejects string fills and `op insert --file` does not persist to the file). Fills are always arrays: [{\"type\":\"solid\",\"color\":\"#0F766E\"}]. Band 06 is a real grid: a 'Matrix / Header Row' with the 10 state headers, then 'Matrix / Row / <Component>' rows whose 'Matrix Cell / <Component> / <State>' cells each hold a component variant or a 'n/a — reason' text (never blank). " +
   '5) Every text node needs an explicit bundled fontFamily ("Inter" for English UI, "Noto Sans SC" for Chinese UI) plus a concrete fontWeight; size text to its box, wrap long headlines, and prevent overlap. Put full-frame backgrounds as the LAST child of their parent (openpencil_move index 999). ' +
   "6) VISUAL REVIEW BEFORE SAVING. Run openpencil_screenshot to get a PNG of the canvas/each screen and LOOK at it: any overlap, clipping, or misalignment? are the section bars visible and COLORED? are all matrix cells filled? is the primary action obvious (squint test)? does it look professional and good to a human, matching the three adjectives? Fix problems with openpencil_update/openpencil_move and screenshot again. openpencil_save is gated on having run openpencil_screenshot first. " +
   "7) Run openpencil_lint_design and fix errors before saving — missing-font-family, background-z-order, empty-frame, missing-section-banners, empty-state-cell — then verify any .op write with openpencil_get. " +
@@ -1714,6 +1715,67 @@ export function buildMcpServer(
               nodeCount: r.nodeCount,
             },
           };
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_insert_section_band",
+      {
+        title: "Insert OpenPencil section band",
+        description:
+          "Author a complete, lint-clean colored section band directly into a guarded .op file — the reliable way to build a design package's '00 Brief … 10 Handoff' rail. " +
+          "Prefer this over hand-building bands with openpencil_insert (op insert rejects string fills and `op insert --file` does not persist to the file). " +
+          "It writes a 'Section / NN <Title>' frame with a full-width colored Banner BG as the last child, an Index Chip + Index Number, a white Section Title, and an optional Section Subtitle, using the harness category color for the index unless you override it. " +
+          "Bands auto-stack down the page below existing 'Section /' frames unless you pass an explicit y. Call once per section (00..10), then openpencil_screenshot to review and openpencil_lint_design to verify.",
+        inputSchema: {
+          workspaceId: z.string(),
+          path: z.string().describe("Workspace-relative .op file to author the band into (created if missing)."),
+          index: z.string().regex(/^\d{1,2}$/).describe('Section index, e.g. "00", "04", "07".'),
+          title: z.string().min(1).max(200).describe('Section title, e.g. "Foundations".'),
+          subtitle: z.string().max(400).optional().describe("Optional one-line purpose shown under the title."),
+          color: z.string().regex(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i).optional().describe("Override the banner color (hex). Defaults to the category color for the index."),
+          chipColor: z.string().regex(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i).optional(),
+          accentColor: z.string().regex(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i).optional(),
+          x: z.number().int().min(-100000).max(100000).optional(),
+          y: z.number().int().min(-100000).max(100000).optional().describe("Override the vertical position. Omit to auto-stack below existing bands."),
+          width: z.number().int().min(200).max(7680).optional().describe("Band width (default 1200)."),
+          height: z.number().int().min(48).max(400).optional().describe("Band height (default 96)."),
+          page: z.string().min(1).max(200).optional(),
+        },
+        outputSchema: {
+          nodeId: z.string(),
+          name: z.string(),
+          x: z.number(),
+          y: z.number(),
+          width: z.number(),
+          height: z.number(),
+          color: z.string(),
+          bandCount: z.number(),
+        },
+        annotations: { ...WRITE, title: "Insert OpenPencil section band" },
+      },
+      async ({ workspaceId, path, index, title, subtitle, color, chipColor, accentColor, x, y, width, height, page }) =>
+        invoke("openpencil_insert_section_band", { workspaceId, path }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilInsertSectionBand(config, guard, ws, {
+            path,
+            index,
+            title,
+            ...(subtitle !== undefined ? { subtitle } : {}),
+            ...(color !== undefined ? { color } : {}),
+            ...(chipColor !== undefined ? { chipColor } : {}),
+            ...(accentColor !== undefined ? { accentColor } : {}),
+            ...(x !== undefined ? { x } : {}),
+            ...(y !== undefined ? { y } : {}),
+            ...(width !== undefined ? { width } : {}),
+            ...(height !== undefined ? { height } : {}),
+            ...(page !== undefined ? { page } : {}),
+          });
+          return text(
+            `Inserted ${r.name} at y=${r.y} (${r.color}) into ${path}. Bands in file: ${r.bandCount}.\n` +
+              "Add the other sections (00..10), then openpencil_screenshot to review and openpencil_lint_design to verify.",
+            r as unknown as Record<string, unknown>,
+          );
         }),
     );
 

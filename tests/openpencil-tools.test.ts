@@ -8,6 +8,7 @@ import { PathGuard } from "../src/path-guard.js";
 import { makeApp } from "../src/http.js";
 import { OpenPencilPreviewManager } from "../src/openpencil-preview-tools.js";
 import {
+  buildSectionBand,
   openPencilDelete,
   openPencilDesign,
   openPencilInsert,
@@ -345,6 +346,29 @@ it("renders a screenshot PNG from read-nodes output", async () => {
   } catch (err) {
     expect(String((err as Error).message)).toMatch(/resvg/i);
   }
+});
+
+it("buildSectionBand produces lint-clean, colored bands with Banner BG last", () => {
+  const bands = [
+    buildSectionBand({ index: "00", title: "Brief", subtitle: "Who, the one job", y: 0 }),
+    buildSectionBand({ index: "04", title: "Foundations", subtitle: "Tokens", y: 256 }),
+    buildSectionBand({ index: "07", title: "Screens", y: 512 }),
+  ];
+  const summary = lintOpenPencilNodeTree(bands);
+  expect(summary.ok).toBe(true);
+  expect(summary.issues.find((i) => i.code === "incomplete-section-banner")).toBeUndefined();
+  expect(summary.issues.find((i) => i.code === "background-z-order")).toBeUndefined();
+  expect(summary.issues.find((i) => i.code === "missing-font-family")).toBeUndefined();
+
+  const band = bands[0]!;
+  const kids = band.children as Array<{ name?: string; fill?: unknown }>;
+  // Banner BG must be the LAST child (OpenPencil paints the last child at the back).
+  const last = kids[kids.length - 1]!;
+  expect(last.name).toBe("Banner BG");
+  expect(JSON.stringify(last.fill)).toContain("#1F2937"); // category color for index 00
+  expect(band.name).toBe("Section / 00 Brief");
+  // index is zero-padded
+  expect(buildSectionBand({ index: "4", title: "X" }).name).toBe("Section / 04 X");
 });
 
 async function fakeOp(): Promise<string> {

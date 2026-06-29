@@ -7,8 +7,9 @@
  * DevSpace configuration.
  */
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { basename, dirname, isAbsolute } from "node:path";
-import { mkdir, stat } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import type { AppConfig } from "./config.js";
 import type { PathGuard } from "./path-guard.js";
 import type { Workspace } from "./workspaces.js";
@@ -994,4 +995,162 @@ export async function openPencilDelete(
   if (input.page !== undefined) args.push("--page", checkedId(input.page, "page"));
   await appendOptionalFileArg(args, guard, ws, input.path);
   return runOpenPencil(config, ws.root, args, undefined, input.timeoutMs);
+}
+
+// --- Section-band helper -----------------------------------------------------
+// `op insert` rejects string fills and `op insert --file` does not persist to
+// the file (it targets the live app), which is why models fall back to raw
+// write_file. This helper authors a lint-clean, correctly-colored section band
+// directly into the .op file as canonical op JSON (array fills, Banner BG as the
+// last child for OpenPencil's reverse z-order), removing the coordinate/most-
+// common-mistake burden that makes hand-built packages fail.
+
+interface OpenPencilPaint {
+  type: "solid";
+  color: string;
+}
+
+/** Banner / chip / accent colors per harness section index (00 Brief … 10 Handoff). */
+const SECTION_PALETTE: Record<string, { banner: string; chip: string; accent: string }> = {
+  "00": { banner: "#1F2937", chip: "#111827", accent: "#374151" },
+  "01": { banner: "#5B21B6", chip: "#4C1D95", accent: "#7C3AED" },
+  "02": { banner: "#3730A3", chip: "#312E81", accent: "#4F46E5" },
+  "03": { banner: "#1D4ED8", chip: "#1E3A8A", accent: "#3B82F6" },
+  "04": { banner: "#0F766E", chip: "#115E59", accent: "#5EEAD4" },
+  "05": { banner: "#15803D", chip: "#166534", accent: "#4ADE80" },
+  "06": { banner: "#B45309", chip: "#92400E", accent: "#FBBF24" },
+  "07": { banner: "#BE123C", chip: "#9F1239", accent: "#FB7185" },
+  "08": { banner: "#A21CAF", chip: "#86198F", accent: "#E879F9" },
+  "09": { banner: "#C2410C", chip: "#9A3412", accent: "#FB923C" },
+  "10": { banner: "#0E7490", chip: "#155E75", accent: "#22D3EE" },
+};
+const SECTION_PALETTE_DEFAULT = { banner: "#1F2937", chip: "#111827", accent: "#374151" };
+
+function paint(color: string): OpenPencilPaint[] {
+  return [{ type: "solid", color }];
+}
+
+export interface SectionBandInput {
+  index: string;
+  title: string;
+  subtitle?: string;
+  color?: string;
+  chipColor?: string;
+  accentColor?: string;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+}
+
+/**
+ * Build a lint-clean `Section / NN <Title>` band node (Divider Tab, Index Chip,
+ * Index Number, Section Title, optional Section Subtitle, and a full-width colored
+ * Banner BG as the LAST child). Pure and deterministic except the random node id.
+ */
+export function buildSectionBand(input: SectionBandInput): OpenPencilNode {
+  const idx = String(input.index).trim().padStart(2, "0");
+  const pal = SECTION_PALETTE[idx] ?? SECTION_PALETTE_DEFAULT;
+  const banner = input.color ?? pal.banner;
+  const chip = input.chipColor ?? pal.chip;
+  const accent = input.accentColor ?? pal.accent;
+  const x = input.x ?? 0;
+  const y = input.y ?? 0;
+  const width = input.width ?? 1200;
+  const height = input.height ?? 96;
+  const id = `sec-${idx}-${randomBytes(4).toString("hex")}`;
+  const textWidth = Math.max(200, width - 300);
+  const children: OpenPencilNode[] = [
+    { id: `${id}-tab`, type: "rectangle", name: "Divider Tab", x: 0, y: 0, width: 6, height, fill: paint(accent) },
+    { id: `${id}-chip`, type: "rectangle", name: "Index Chip", x: 40, y: Math.round(height * 0.21), width: 88, height: Math.round(height * 0.58), fill: paint(chip) },
+    { id: `${id}-num`, type: "text", name: "Index Number", x: 40, y: Math.round(height * 0.33), width: 88, height: 36, fill: paint("#FFFFFF"), fontFamily: "Inter", fontWeight: 700, fontSize: 28, content: idx },
+    { id: `${id}-title`, type: "text", name: "Section Title", x: 152, y: Math.round(height * 0.23), width: textWidth, height: 42, fill: paint("#FFFFFF"), fontFamily: "Inter", fontWeight: 700, fontSize: 34, content: input.title },
+  ];
+  if (input.subtitle?.trim()) {
+    children.push({ id: `${id}-sub`, type: "text", name: "Section Subtitle", x: 152, y: Math.round(height * 0.66), width: textWidth, height: 22, fill: paint("#E5E7EB"), fontFamily: "Inter", fontWeight: 400, fontSize: 16, content: input.subtitle });
+  }
+  // Banner BG MUST be the last child (OpenPencil paints the last child at the back).
+  children.push({ id: `${id}-bg`, type: "rectangle", name: "Banner BG", x: 0, y: 0, width, height, fill: paint(banner) });
+  return { id, type: "frame", name: `Section / ${idx} ${input.title}`, x, y, width, height, fill: paint("#F8FAFC"), children };
+}
+
+interface OpDocument {
+  version?: string;
+  name?: string;
+  pages?: Array<{ id?: string; name?: string; children?: OpenPencilNode[] }>;
+  children?: OpenPencilNode[];
+}
+
+export interface OpenPencilSectionBandResult {
+  nodeId: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+  bandCount: number;
+}
+
+/**
+ * Author a section band directly into a guarded .op file (read-modify-write), so
+ * it is reliable (unlike `op insert --file`) and lint-clean. Auto-stacks below
+ * existing `Section /` bands on the rail unless an explicit `y` is given.
+ */
+export async function openPencilInsertSectionBand(
+  config: AppConfig,
+  guard: PathGuard,
+  ws: Workspace,
+  input: SectionBandInput & { path: string; page?: string },
+): Promise<OpenPencilSectionBandResult> {
+  assertEnabled(config);
+  if (typeof input.title !== "string" || !input.title.trim()) throw new OpenPencilError("title is required");
+  if (input.title.length > 200) throw new OpenPencilError("title is too long");
+  if (input.subtitle !== undefined && input.subtitle.length > 400) throw new OpenPencilError("subtitle is too long");
+  if (!/^\d{1,2}$/.test(String(input.index).trim())) throw new OpenPencilError('index must be 1-2 digits, e.g. "04"');
+  for (const c of [input.color, input.chipColor, input.accentColor]) {
+    if (c !== undefined && !/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(c)) throw new OpenPencilError("colors must be hex, e.g. #0F766E");
+  }
+  const target = await resolveOpWrite(guard, ws, input.path);
+
+  let doc: OpDocument | null = null;
+  try {
+    doc = JSON.parse(await readFile(target, "utf8")) as OpDocument;
+  } catch {
+    doc = null;
+  }
+  if (!doc || typeof doc !== "object") {
+    doc = { version: "1.0.0", name: basename(input.path).replace(/\.op$/i, ""), pages: [{ id: "p", name: "Page 1", children: [] }], children: [] };
+  }
+  if (!Array.isArray(doc.pages) || doc.pages.length === 0) doc.pages = [{ id: "p", name: "Page 1", children: [] }];
+  const page = (input.page ? doc.pages.find((p) => p.id === input.page) : undefined) ?? doc.pages[0]!;
+  if (!Array.isArray(page.children)) page.children = [];
+
+  const BAND_GAP = 160;
+  let y = input.y;
+  if (y === undefined) {
+    let maxBottom = -Infinity;
+    for (const child of page.children) {
+      if (typeof child?.name === "string" && /^Section \//.test(child.name)) {
+        maxBottom = Math.max(maxBottom, (child.y ?? 0) + (child.height ?? 96));
+      }
+    }
+    y = Number.isFinite(maxBottom) ? maxBottom + BAND_GAP : 0;
+  }
+
+  const node = buildSectionBand({ ...input, y });
+  page.children.push(node);
+  await writeFile(target, JSON.stringify(doc), "utf8");
+
+  const bandCount = page.children.filter((c) => typeof c?.name === "string" && /^Section \//.test(c.name)).length;
+  return {
+    nodeId: node.id!,
+    name: node.name!,
+    x: node.x ?? 0,
+    y,
+    width: node.width ?? 1200,
+    height: node.height ?? 96,
+    color: input.color ?? (SECTION_PALETTE[String(input.index).trim().padStart(2, "0")] ?? SECTION_PALETTE_DEFAULT).banner,
+    bandCount,
+  };
 }
