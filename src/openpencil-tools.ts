@@ -631,6 +631,51 @@ export interface OpenPencilScreenshotResult {
  * AI client can SEE what it authored and judge visual quality. Reads nodes through
  * the guarded read-nodes path, then rasterizes via the approximate SVG renderer.
  */
+function parseNodeTree(stdout: string): OpenPencilNode[] {
+  let parsed: { nodes?: OpenPencilNode[] };
+  try {
+    parsed = JSON.parse(stdout) as { nodes?: OpenPencilNode[] };
+  } catch {
+    throw new OpenPencilError("OpenPencil returned invalid JSON");
+  }
+  return Array.isArray(parsed.nodes) ? parsed.nodes : [];
+}
+
+/**
+ * Read the node tree for lint/screenshot, robust to an OpenPencil CLI quirk:
+ * `op read-nodes --file` is sensitive to the file's JSON formatting and can
+ * silently return [] for a valid .op that `op get` reads fine (e.g. a file
+ * written by write_file or `op design` with pretty-printed JSON). When
+ * read-nodes yields no nodes, fall back to the lenient `op get`. Returns the
+ * nodes plus the run whose exit status callers report.
+ */
+async function readNodeTreeWithFallback(
+  config: AppConfig,
+  guard: PathGuard,
+  ws: Workspace,
+  input: { path?: string; ids?: readonly string[]; page?: string; timeoutMs?: number },
+): Promise<{ nodes: OpenPencilNode[]; run: OpenPencilRunResult }> {
+  const read = await openPencilReadNodes(config, guard, ws, {
+    ...(input.path !== undefined ? { path: input.path } : {}),
+    ...(input.ids !== undefined ? { ids: [...input.ids] } : {}),
+    ...(input.page !== undefined ? { page: input.page } : {}),
+    depth: 50,
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+  });
+  if (read.exitCode !== 0) return { nodes: [], run: read };
+  const nodes = parseNodeTree(read.stdout);
+  if (nodes.length > 0) return { nodes, run: read };
+  const got = await openPencilGet(config, guard, ws, {
+    ...(input.path !== undefined ? { path: input.path } : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+  });
+  if (got.exitCode === 0) {
+    const gotNodes = parseNodeTree(got.stdout);
+    if (gotNodes.length > 0) return { nodes: gotNodes, run: got };
+  }
+  return { nodes, run: read };
+}
+
 export async function openPencilScreenshot(
   config: AppConfig,
   guard: PathGuard,
@@ -650,28 +695,20 @@ export async function openPencilScreenshot(
   ) {
     throw new OpenPencilError("maxDimension must be between 64 and 4096");
   }
-  const read = await openPencilReadNodes(config, guard, ws, {
+  const { nodes, run } = await readNodeTreeWithFallback(config, guard, ws, {
     ...(input.path !== undefined ? { path: input.path } : {}),
     ...(input.id !== undefined ? { ids: [input.id] } : {}),
     ...(input.page !== undefined ? { page: input.page } : {}),
-    depth: 50,
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   });
-  if (read.exitCode !== 0) {
+  if (run.exitCode !== 0) {
     throw new OpenPencilError(
-      `OpenPencil read-nodes failed (exit ${read.exitCode}): ${(read.stderr || read.stdout || "").trim()}`,
+      `OpenPencil read failed (exit ${run.exitCode}): ${(run.stderr || run.stdout || "").trim()}`,
     );
   }
-  let parsed: { nodes?: RenderNode[] };
-  try {
-    parsed = JSON.parse(read.stdout) as { nodes?: RenderNode[] };
-  } catch {
-    throw new OpenPencilError("OpenPencil read-nodes returned invalid JSON");
-  }
-  const nodes = Array.isArray(parsed.nodes) ? parsed.nodes : [];
   if (nodes.length === 0) throw new OpenPencilError("No OpenPencil nodes to screenshot.");
   try {
-    const rendered = await renderOpenPencilPng(nodes, {
+    const rendered = await renderOpenPencilPng(nodes as unknown as RenderNode[], {
       ...(input.id !== undefined ? { targetId: input.id } : {}),
       ...(input.maxDimension !== undefined ? { maxDimension: input.maxDimension } : {}),
       ...(input.background !== undefined ? { background: input.background } : {}),
@@ -828,24 +865,17 @@ export async function openPencilLintDesign(
     timeoutMs?: number;
   },
 ): Promise<OpenPencilLintResult> {
-  const read = await openPencilReadNodes(config, guard, ws, {
+  const { nodes, run } = await readNodeTreeWithFallback(config, guard, ws, {
     ...(input.path !== undefined ? { path: input.path } : {}),
     ...(input.ids !== undefined ? { ids: input.ids } : {}),
     ...(input.page !== undefined ? { page: input.page } : {}),
-    depth: 50,
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   });
-  if (read.exitCode !== 0) {
-    return { ...read, ok: false, checkedFrames: 0, visibleElementNodes: 0, visibleTextNodes: 0, issues: [] };
+  if (run.exitCode !== 0) {
+    return { ...run, ok: false, checkedFrames: 0, visibleElementNodes: 0, visibleTextNodes: 0, issues: [] };
   }
-  let parsed: { nodes?: OpenPencilNode[] };
-  try {
-    parsed = JSON.parse(read.stdout) as { nodes?: OpenPencilNode[] };
-  } catch {
-    throw new OpenPencilError("OpenPencil read-nodes returned invalid JSON");
-  }
-  const summary = lintOpenPencilNodeTree(Array.isArray(parsed.nodes) ? parsed.nodes : []);
-  return { ...read, ...summary };
+  const summary = lintOpenPencilNodeTree(nodes);
+  return { ...run, ...summary };
 }
 
 export async function openPencilSelection(

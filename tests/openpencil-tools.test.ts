@@ -14,6 +14,7 @@ import {
   lintOpenPencilNodeTree,
   openPencilMove,
   openPencilOpen,
+  openPencilLintDesign,
   openPencilReadNodes,
   openPencilReplace,
   openPencilSave,
@@ -234,6 +235,61 @@ it("handles the live op CLI paint-array fill shape without crashing", () => {
   ]);
   // A near-white paint-array Banner BG is detected as uncolored (and nothing throws).
   expect(summary.issues.some((i) => i.code === "incomplete-section-banner" && i.nodeId === "bg")).toBe(true);
+});
+
+it("falls back to op get when read-nodes returns empty for a valid file (formatting-sensitive CLI)", async () => {
+  fx = await makeFixture();
+  await mkdir(join(fx.root, "designs"), { recursive: true });
+  await writeFile(join(fx.root, "designs/fmt.op"), "{}", "utf8");
+  // Reproduce the OpenPencil quirk: read-nodes returns [] but get returns the tree.
+  const bin = join(fx.base, "op-fallback-fake.mjs");
+  const tree = JSON.stringify({
+    nodes: [
+      {
+        id: "f",
+        type: "frame",
+        name: "Section / 00 Brief",
+        x: 0,
+        y: 0,
+        width: 1200,
+        height: 96,
+        fill: [{ type: "solid", color: "#1F2937" }],
+        children: [
+          { id: "t", type: "text", name: "Section Title", x: 10, y: 10, width: 200, height: 30, fill: [{ type: "solid", color: "#FFFFFF" }], fontFamily: "Inter", fontWeight: 700, fontSize: 24, content: "Brief" },
+          { id: "bg", type: "rectangle", name: "Banner BG", x: 0, y: 0, width: 1200, height: 96, fill: [{ type: "solid", color: "#1F2937" }] },
+        ],
+      },
+    ],
+  });
+  await writeFile(
+    bin,
+    `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args[0] === "read-nodes") process.stdout.write(JSON.stringify({ nodes: [] }));
+if (args[0] === "get") process.stdout.write(${JSON.stringify(tree)});
+if (args[0] === "status") process.stdout.write("ok");
+`,
+    "utf8",
+  );
+  await chmod(bin, 0o755);
+  const config = loadConfig({
+    transport: "http",
+    env: { ALLOWED_ROOTS: fx.root, OWNER_TOKEN: "x".repeat(40), ENABLE_OPENPENCIL: "1", OPENPENCIL_CLI: bin },
+    warn: silent,
+  });
+
+  // Lint must see the frame via the get fallback, not the empty read-nodes.
+  const lint = await openPencilLintDesign(config, fx.guard, fx.ws, { path: "designs/fmt.op" });
+  expect(lint.checkedFrames).toBeGreaterThan(0);
+  expect(lint.visibleTextNodes).toBeGreaterThan(0);
+
+  // Screenshot must render via the same fallback (tolerate a missing resvg optional dep).
+  try {
+    const shot = await openPencilScreenshot(config, fx.guard, fx.ws, { path: "designs/fmt.op" });
+    expect(shot.nodeCount).toBeGreaterThan(0);
+  } catch (err) {
+    expect(String((err as Error).message)).toMatch(/resvg/i);
+  }
 });
 
 async function fakeOpNodes(nodesJson: string): Promise<string> {

@@ -51,8 +51,8 @@ async function connect(server: McpServer): Promise<Client> {
   return client;
 }
 
-function contentText(result: { content?: unknown }): string {
-  return JSON.stringify(result.content ?? "");
+function contentText(result: unknown): string {
+  return JSON.stringify((result as { content?: unknown })?.content ?? "");
 }
 
 it("shares the visual-review save gate across server instances", async () => {
