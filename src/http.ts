@@ -183,6 +183,10 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
   // Shared across HTTP transport sessions. ChatGPT may open a workspace in one
   // session and invoke follow-up tools in another while reusing workspaceId.
   const registry = new WorkspaceRegistry(guard, config.allowedRoots);
+  // OpenPencil visual-review gate, shared like the registry: ChatGPT's stateless
+  // tool calls each get a fresh ephemeral McpServer, so the screenshot-unlocks-save
+  // state must live out here, not inside buildMcpServer.
+  const visualReviewedWorkspaces = new Set<string>();
 
   app.post("/mcp", auth.requireAuth, async (req: Request, res: Response) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
@@ -208,7 +212,7 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
           audit({ event: "session_close", workspaceId: sid, success: true });
         }
       };
-      const server = buildMcpServer(config, guard, registry, appPreviewManager, editSessionManager, openPencilPreviewManager);
+      const server = buildMcpServer(config, guard, registry, appPreviewManager, editSessionManager, openPencilPreviewManager, visualReviewedWorkspaces);
       await server.connect(transport);
     } else {
       // ChatGPT frequently sends resources/read, tools/call, etc. WITHOUT
@@ -226,7 +230,7 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
       res.on("close", () => {
         void ephemeral.close();
       });
-      const server = buildMcpServer(config, guard, registry, appPreviewManager, editSessionManager, openPencilPreviewManager);
+      const server = buildMcpServer(config, guard, registry, appPreviewManager, editSessionManager, openPencilPreviewManager, visualReviewedWorkspaces);
       await server.connect(ephemeral);
       await ephemeral.handleRequest(req, res, req.body);
       return;

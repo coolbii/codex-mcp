@@ -346,6 +346,7 @@ export function buildMcpServer(
   appPreviewManager = new AppPreviewManager(config, guard),
   editSessionManager?: EditSessionManager,
   openPencilPreviewManager = new OpenPencilPreviewManager(config),
+  visualReviewedWorkspaces: Set<string> = new Set<string>(),
 ): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
@@ -410,10 +411,12 @@ export function buildMcpServer(
   const WRITE = { readOnlyHint: false, destructiveHint: true, openWorldHint: false } as const;
   const secretGuard = new SecretGuard({ extraDenyPatterns: config.denyPaths, scanContent: config.secretScan });
   const siteManager = new SiteManager(config, guard);
-  // Visual-review gate: openpencil_save refuses until the model has rendered and
-  // looked at the design with openpencil_screenshot at least once this session
-  // (per workspace). The model can override with force:true.
-  const visualReviewedWorkspaces = new Set<string>();
+  // Visual-review gate state (`visualReviewedWorkspaces`) is passed in so it is
+  // SHARED across HTTP sessions / ephemeral servers. ChatGPT's stateless tool calls
+  // each get a fresh McpServer, so a per-instance Set would never see the
+  // screenshot that unlocked the gate (the save would always be blocked).
+  // openpencil_screenshot adds the workspaceId; openpencil_save checks it
+  // (force:true bypasses).
   const canvasSessions = editSessionManager ?? new EditSessionManager(config, siteManager);
   const widgetOrigin = config.publicBaseUrl ?? `http://${config.host}:${config.port}`;
   const widgetMeta = {
