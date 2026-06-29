@@ -33,20 +33,20 @@ Summarize my answers as a one-paragraph Brief and wait for me to say "go".
 the user flow, and the design foundations (color/type/spacing/radius tokens with
 rationale). Wait for my approval.
 
-**STAGE 3 — BUILD (node-by-node, not `op design`):**
-- Define `04 / Foundations` tokens as named layers and reuse them everywhere.
-- If a package: stack section bands top-to-bottom, each a frame named
-  `Section / NN <Title>` (00 Brief … 10 Handoff) with a VISIBLE COLORED bar — a
-  full-width `Banner BG` rectangle as the **last child** in the band's category
-  color (00 slate #1F2937, 04 teal #0F766E, 06 amber #B45309, 07 rose #BE123C,
-  10 cyan #0E7490, etc.), plus `Index Chip` + `Index Number`, a white
-  `Section Title`, and a `Section Subtitle`.
-- Build `06 / State Matrix` as a real grid: a `Matrix / Header Row` with the 10
-  state headers, then `Matrix / Row / <Component>` rows whose
-  `Matrix Cell / <Component> / <State>` cells each hold a variant or a
-  `n/a — reason` text (never blank).
-- Every text node sets an explicit `fontFamily` ("Inter" for English, "Noto Sans
-  SC" for Chinese) and a concrete `fontWeight`. Size text to its box.
+**STAGE 3 — BUILD (use the helpers; author into a `.op` file path):**
+- If a package: build the `00 Brief … 10 Handoff` rail with
+  **`openpencil_insert_section_band`** — one call per section (pass `index`,
+  `title`, optional `subtitle`). It writes a lint-clean colored band (Banner BG,
+  Index Chip + Number, Section Title, Subtitle) in the category color and
+  auto-stacks down the page. Don't hand-build bands with `write_file` or
+  `openpencil_insert` (op rejects string fills; `op insert --file` doesn't persist).
+- Build `06 / State Matrix` with **`openpencil_insert_state_matrix`** — pass
+  `components` and `states`; it authors the whole grid (header row + one row per
+  component, every cell filled) lint-clean in one call.
+- For `04 / Foundations` tokens and bespoke content, use `openpencil_insert` with
+  array fills (`[{"type":"solid","color":"#0F766E"}]`); reuse named token layers
+  across screens. Every text node sets an explicit `fontFamily` ("Inter" for
+  English, "Noto Sans SC" for Chinese) + a concrete `fontWeight`.
 
 **STAGE 4 — VISUAL REVIEW (mandatory before saving):**
 - Call `openpencil_screenshot` (use `id` to crop to each `Screen` / `Section`).

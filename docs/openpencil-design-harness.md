@@ -280,30 +280,38 @@ look. Run a bounded loop (≈3 iterations max):
 ## Canvas organization (section bars)
 
 "Apple-like file discipline" must be visible on the canvas, not just in the layer
-panel. Lay the package out as a vertical rail of section bands, each a frame named
-`Section / NN <Title>` carrying a colored banner:
+panel. Lay the package out as a vertical rail of `Section / NN <Title>` bands with
+colored banners. **Use the helpers — they produce this lint-clean by construction:**
 
-- `Banner BG` — a full-width rectangle in the band's category color, as the **last
-  child** of the band (so it paints behind, per `background-z-order`).
-- `Index Chip` + `Index Number` — the two-digit step number.
-- `Section Title` (white) and `Section Subtitle`.
+- **`openpencil_insert_section_band`** — one call per section (`index`, `title`,
+  `subtitle`). Writes the `Section / NN <Title>` frame with a full-width `Banner BG`
+  rectangle (category color, **last child** so it paints behind), `Index Chip` +
+  `Index Number`, white `Section Title`, and `Section Subtitle`, auto-stacked down
+  the page. Category colors: `00` slate `#1F2937`, `01` violet `#5B21B6`, `02`
+  indigo `#3730A3`, `03` blue `#1D4ED8`, `04` teal `#0F766E`, `05` green `#15803D`,
+  `06` amber `#B45309`, `07` rose `#BE123C`, `08` fuchsia `#A21CAF`, `09` orange
+  `#C2410C`, `10` cyan `#0E7490` (override with `color`).
+- **`openpencil_insert_state_matrix`** — one call for band `06` (`components`,
+  `states`). Authors a `Matrix / Header Row` plus one `Matrix / Row / <Component>`
+  per component, every `Matrix Cell` filled — so `missing-state-matrix-headers` and
+  `empty-state-cell` pass automatically.
 
-Category colors (one hue per band): `00` slate `#1F2937`, `01` violet `#5B21B6`,
-`02` indigo `#3730A3`, `03` blue `#1D4ED8`, `04` teal `#0F766E`, `05` green
-`#15803D`, `06` amber `#B45309`, `07` rose `#BE123C`, `08` fuchsia `#A21CAF`,
-`09` orange `#C2410C`, `10` cyan `#0E7490`. Banner text is white/light tint.
+Both write canonical op JSON (array fills) directly into the `.op` file, which is
+reliable; `op insert --file` does **not** persist to the file, and `write_file` of
+raw `.op` JSON is error-prone — so prefer the helpers.
 
-Band `06` is a real grid: a `Matrix / Header Row` with the 10 state headers, then
-`Matrix / Row / <Component>` rows whose `Matrix Cell / <Component> / <State>` cells
-each hold a variant or an explicit `n/a — reason` (never blank).
+## Authoring path
 
-## Authoring path: prefer node-by-node
+Build the rail and matrix with the helpers above. For tokens and bespoke content,
+use `openpencil_insert` / `openpencil_update` / `openpencil_move` /
+`openpencil_replace` (array fills), not `op design`. `op design` is a one-shot
+black box you cannot organize into bands or fix during visual review, because it
+does not give you node ids to update — use it only to seed the interior of a single
+screen, then lift that content into the node-authored structure.
 
-Build with `openpencil_insert` / `openpencil_update` / `openpencil_move` /
-`openpencil_replace`, not `op design`. `op design` is a one-shot black box you
-cannot organize into bands or fix during visual review, because it does not give
-you node ids to update. Use it only to seed the interior of a single screen, then
-lift that content into the node-authored band structure.
+Note: read tools — `openpencil_lint_design` and `openpencil_screenshot` read via
+`op get` (reliable), because `op read-nodes` can return empty (JSON formatting) or
+stale (the running app's cache) data.
 
 ## Quality gate
 
