@@ -643,12 +643,13 @@ function parseNodeTree(stdout: string): OpenPencilNode[] {
 }
 
 /**
- * Read the node tree for lint/screenshot, robust to an OpenPencil CLI quirk:
- * `op read-nodes --file` is sensitive to the file's JSON formatting and can
- * silently return [] for a valid .op that `op get` reads fine (e.g. a file
- * written by write_file or `op design` with pretty-printed JSON). When
- * read-nodes yields no nodes, fall back to the lenient `op get`. Returns the
- * nodes plus the run whose exit status callers report.
+ * Read the node tree for lint/screenshot. `op get` is the PRIMARY reader because
+ * `op read-nodes` is unreliable: it can return [] for a valid file (sensitive to
+ * the file's JSON formatting) AND it can return STALE data — when the OpenPencil
+ * app is running, read-nodes serves the app's cached copy, so an edit persisted
+ * to disk (e.g. via op move/replace) is not reflected and the render/lint sees
+ * the pre-edit state. `op get` reads the actual file/live document, so it is
+ * correct in both cases. read-nodes is kept only as a last-resort fallback.
  */
 async function readNodeTreeWithFallback(
   config: AppConfig,
@@ -656,6 +657,20 @@ async function readNodeTreeWithFallback(
   ws: Workspace,
   input: { path?: string; ids?: readonly string[]; page?: string; timeoutMs?: number },
 ): Promise<{ nodes: OpenPencilNode[]; run: OpenPencilRunResult }> {
+  const got = await openPencilGet(config, guard, ws, {
+    ...(input.path !== undefined ? { path: input.path } : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+  });
+  if (got.exitCode === 0) {
+    let gotNodes: OpenPencilNode[] = [];
+    try {
+      gotNodes = parseNodeTree(got.stdout);
+    } catch {
+      gotNodes = []; // get returned non-JSON (or nothing) — fall through to read-nodes
+    }
+    if (gotNodes.length > 0) return { nodes: gotNodes, run: got };
+  }
+  // Fallback: read-nodes (covers anything op get cannot serve).
   const read = await openPencilReadNodes(config, guard, ws, {
     ...(input.path !== undefined ? { path: input.path } : {}),
     ...(input.ids !== undefined ? { ids: [...input.ids] } : {}),
@@ -663,18 +678,8 @@ async function readNodeTreeWithFallback(
     depth: 50,
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   });
-  if (read.exitCode !== 0) return { nodes: [], run: read };
-  const nodes = parseNodeTree(read.stdout);
-  if (nodes.length > 0) return { nodes, run: read };
-  const got = await openPencilGet(config, guard, ws, {
-    ...(input.path !== undefined ? { path: input.path } : {}),
-    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-  });
-  if (got.exitCode === 0) {
-    const gotNodes = parseNodeTree(got.stdout);
-    if (gotNodes.length > 0) return { nodes: gotNodes, run: got };
-  }
-  return { nodes, run: read };
+  if (read.exitCode !== 0) return { nodes: [], run: got.exitCode === 0 ? got : read };
+  return { nodes: parseNodeTree(read.stdout), run: read };
 }
 
 export async function openPencilScreenshot(

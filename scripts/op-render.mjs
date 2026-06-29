@@ -32,9 +32,9 @@ if (!live && !file) {
   process.exit(2);
 }
 
-const args = ["read-nodes"];
-if (nodeId) args.push(nodeId);
-args.push("--depth", "50");
+// Use `op get` (reads disk/live reliably); `op read-nodes` can return stale (app
+// cache) or empty (JSON formatting) data. See readNodeTreeWithFallback in src.
+const args = ["get"];
 if (file) args.push("--file", file);
 
 let out;

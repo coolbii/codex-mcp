@@ -238,7 +238,7 @@ it("handles the live op CLI paint-array fill shape without crashing", () => {
   expect(summary.issues.some((i) => i.code === "incomplete-section-banner" && i.nodeId === "bg")).toBe(true);
 });
 
-it("falls back to op get when read-nodes returns empty for a valid file (formatting-sensitive CLI)", async () => {
+it("prefers op get over read-nodes (read-nodes can be empty OR stale)", async () => {
   fx = await makeFixture();
   await mkdir(join(fx.root, "designs"), { recursive: true });
   await writeFile(join(fx.root, "designs/fmt.op"), "{}", "utf8");
@@ -262,11 +262,15 @@ it("falls back to op get when read-nodes returns empty for a valid file (formatt
       },
     ],
   });
+  // read-nodes returns a STALE, textless frame; get returns the real tree.
+  // With op get as the primary reader, lint/screenshot must reflect `get`, not the
+  // stale read-nodes (this catches both the empty and the stale-cache failure modes).
+  const stale = JSON.stringify({ nodes: [{ id: "stale", type: "frame", name: "STALE Frame", x: 0, y: 0, width: 100, height: 100, children: [] }] });
   await writeFile(
     bin,
     `#!/usr/bin/env node
 const args = process.argv.slice(2);
-if (args[0] === "read-nodes") process.stdout.write(JSON.stringify({ nodes: [] }));
+if (args[0] === "read-nodes") process.stdout.write(${JSON.stringify(stale)});
 if (args[0] === "get") process.stdout.write(${JSON.stringify(tree)});
 if (args[0] === "status") process.stdout.write("ok");
 `,
@@ -279,10 +283,11 @@ if (args[0] === "status") process.stdout.write("ok");
     warn: silent,
   });
 
-  // Lint must see the frame via the get fallback, not the empty read-nodes.
+  // Lint must reflect `op get`, not the stale read-nodes (which has no text node).
   const lint = await openPencilLintDesign(config, fx.guard, fx.ws, { path: "designs/fmt.op" });
   expect(lint.checkedFrames).toBeGreaterThan(0);
-  expect(lint.visibleTextNodes).toBeGreaterThan(0);
+  expect(lint.visibleTextNodes).toBeGreaterThan(0); // 0 if the stale read-nodes were used
+  expect(lint.issues.find((i) => i.nodeId === "stale")).toBeUndefined();
 
   // Screenshot must render via the same fallback (tolerate a missing resvg optional dep).
   try {
