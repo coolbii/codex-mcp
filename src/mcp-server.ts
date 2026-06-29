@@ -35,6 +35,7 @@ import {
   openPencilGet,
   openPencilInsert,
   openPencilInsertSectionBand,
+  openPencilInsertStateMatrix,
   openPencilLintDesign,
   openPencilMove,
   openPencilOpen,
@@ -76,7 +77,7 @@ const OPENPENCIL_AUTHORING_GUIDANCE =
   "1) CLARIFY FIRST. Before any openpencil_insert, ask the user and WAIT for answers: (a) who is the user and the one job; (b) surface + viewport(s); (c) three adjectives for the feel (not 'modern'); (d) reference source (Figma/URL/screenshots) to extract structure+tokens from, not copy; (e) existing brand tokens, or should you propose a set for approval; (f) which components are in scope; (g) which screens; (h) which of the 10 states matter; (i) is the deliverable a full design package or a single screen. Summarize the answers as a one-paragraph Brief and get an explicit 'go'. " +
   "2) FOUNDATIONS BEFORE SCREENS. Define color/type/spacing/radius tokens as named foundation layers and reuse them everywhere; no ad-hoc per-screen values. " +
   "3) BUILD NODE-BY-NODE with openpencil_insert/update/move/replace (prefer this over op design, which you cannot organize or fix). Organize nodes as Screen > Foundations/Components/Layout/Content/States with semantic layer names. " +
-  "4) For a design PACKAGE (not a single screen), build the '00 Brief … 10 Handoff' rail with openpencil_insert_section_band — ONE call per section (00..10), into a .op file path. It reliably authors a lint-clean 'Section / NN <Title>' band (full-width colored Banner BG as the last child in the category color, Index Chip+Number, white Section Title, optional Section Subtitle) and auto-stacks bands down the page. Do NOT hand-build bands with raw write_file or openpencil_insert (op insert rejects string fills and `op insert --file` does not persist to the file). Fills are always arrays: [{\"type\":\"solid\",\"color\":\"#0F766E\"}]. Band 06 is a real grid: a 'Matrix / Header Row' with the 10 state headers, then 'Matrix / Row / <Component>' rows whose 'Matrix Cell / <Component> / <State>' cells each hold a component variant or a 'n/a — reason' text (never blank). " +
+  "4) For a design PACKAGE (not a single screen), build the '00 Brief … 10 Handoff' rail with openpencil_insert_section_band — ONE call per section (00..10), into a .op file path. It reliably authors a lint-clean 'Section / NN <Title>' band (full-width colored Banner BG as the last child in the category color, Index Chip+Number, white Section Title, optional Section Subtitle) and auto-stacks bands down the page. Do NOT hand-build bands with raw write_file or openpencil_insert (op insert rejects string fills and `op insert --file` does not persist to the file). Fills are always arrays: [{\"type\":\"solid\",\"color\":\"#0F766E\"}]. Build band 06 (the state matrix) with openpencil_insert_state_matrix — pass the components and the states and it authors the whole grid (Matrix / Header Row + one Matrix / Row per component, every cell filled) lint-clean in one call. " +
   '5) Every text node needs an explicit bundled fontFamily ("Inter" for English UI, "Noto Sans SC" for Chinese UI) plus a concrete fontWeight; size text to its box, wrap long headlines, and prevent overlap. Put full-frame backgrounds as the LAST child of their parent (openpencil_move index 999). ' +
   "6) VISUAL REVIEW BEFORE SAVING. Run openpencil_screenshot to get a PNG of the canvas/each screen and LOOK at it: any overlap, clipping, or misalignment? are the section bars visible and COLORED? are all matrix cells filled? is the primary action obvious (squint test)? does it look professional and good to a human, matching the three adjectives? Fix problems with openpencil_update/openpencil_move and screenshot again. openpencil_save is gated on having run openpencil_screenshot first. " +
   "7) Run openpencil_lint_design and fix errors before saving — missing-font-family, background-z-order, empty-frame, missing-section-banners, empty-state-cell — then verify any .op write with openpencil_get. " +
@@ -1774,6 +1775,59 @@ export function buildMcpServer(
           return text(
             `Inserted ${r.name} at y=${r.y} (${r.color}) into ${path}. Bands in file: ${r.bandCount}.\n` +
               "Add the other sections (00..10), then openpencil_screenshot to review and openpencil_lint_design to verify.",
+            r as unknown as Record<string, unknown>,
+          );
+        }),
+    );
+
+    server.registerTool(
+      "openpencil_insert_state_matrix",
+      {
+        title: "Insert OpenPencil state matrix",
+        description:
+          "Author a complete, lint-clean 'Section / 06 State Matrix' band directly into a guarded .op file: a colored banner, a 'Matrix / Header Row' of state columns, and one 'Matrix / Row / <component>' per component whose every 'Matrix Cell / <component> / <state>' holds a filled variant. " +
+          "Prefer this over hand-building a matrix (it satisfies missing-state-matrix-headers and empty-state-cell by construction). Auto-stacks below existing 'Section /' bands unless you pass y.",
+        inputSchema: {
+          workspaceId: z.string(),
+          path: z.string().describe("Workspace-relative .op file to author the matrix into (created if missing)."),
+          components: z.array(z.string().min(1).max(80)).min(1).max(30).describe('Component names, e.g. ["Button / Primary", "TextField"].'),
+          states: z.array(z.string().min(1).max(40)).min(1).max(12).describe('State columns, e.g. ["Default","Hover","Focus","Disabled"].'),
+          index: z.string().regex(/^\d{1,2}$/).optional().describe('Section index (default "06").'),
+          title: z.string().min(1).max(200).optional().describe('Band title (default "State Matrix").'),
+          subtitle: z.string().max(400).optional(),
+          x: z.number().int().min(-100000).max(100000).optional(),
+          y: z.number().int().min(-100000).max(100000).optional().describe("Override vertical position. Omit to auto-stack."),
+          page: z.string().min(1).max(200).optional(),
+        },
+        outputSchema: {
+          nodeId: z.string(),
+          name: z.string(),
+          y: z.number(),
+          width: z.number(),
+          height: z.number(),
+          rows: z.number(),
+          columns: z.number(),
+          cells: z.number(),
+        },
+        annotations: { ...WRITE, title: "Insert OpenPencil state matrix" },
+      },
+      async ({ workspaceId, path, components, states, index, title, subtitle, x, y, page }) =>
+        invoke("openpencil_insert_state_matrix", { workspaceId, path }, async () => {
+          const ws = registry.get(workspaceId);
+          const r = await openPencilInsertStateMatrix(config, guard, ws, {
+            path,
+            components,
+            states,
+            ...(index !== undefined ? { index } : {}),
+            ...(title !== undefined ? { title } : {}),
+            ...(subtitle !== undefined ? { subtitle } : {}),
+            ...(x !== undefined ? { x } : {}),
+            ...(y !== undefined ? { y } : {}),
+            ...(page !== undefined ? { page } : {}),
+          });
+          return text(
+            `Inserted ${r.name} at y=${r.y}: ${r.rows} component(s) × ${r.columns} state(s) = ${r.cells} filled cells, into ${path}.\n` +
+              "Then openpencil_screenshot to review and openpencil_lint_design to verify.",
             r as unknown as Record<string, unknown>,
           );
         }),

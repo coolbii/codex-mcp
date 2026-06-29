@@ -75,6 +75,7 @@ interface OpenPencilNode {
   fontSize?: number;
   fontWeight?: number | string;
   lineHeight?: number;
+  textAlign?: string;
   content?: string;
   children?: OpenPencilNode[] | string;
 }
@@ -659,6 +660,7 @@ async function readNodeTreeWithFallback(
 ): Promise<{ nodes: OpenPencilNode[]; run: OpenPencilRunResult }> {
   const got = await openPencilGet(config, guard, ws, {
     ...(input.path !== undefined ? { path: input.path } : {}),
+    depth: 50,
     ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   });
   if (got.exitCode === 0) {
@@ -823,11 +825,18 @@ export async function openPencilGet(
   input: {
     path?: string;
     query?: string;
+    depth?: number;
     timeoutMs?: number;
   },
 ): Promise<OpenPencilRunResult> {
   const args = ["get"];
   if (input.query?.trim()) args.push(input.query.trim());
+  if (input.depth !== undefined) {
+    if (!Number.isInteger(input.depth) || input.depth < 0 || input.depth > 50) {
+      throw new OpenPencilError("depth must be between 0 and 50");
+    }
+    args.push("--depth", String(input.depth));
+  }
   if (input.path) args.push("--file", await resolveOpRead(guard, ws, input.path));
   return runOpenPencil(config, ws.root, args, undefined, input.timeoutMs);
 }
@@ -1157,5 +1166,254 @@ export async function openPencilInsertSectionBand(
     height: node.height ?? 96,
     color: input.color ?? (SECTION_PALETTE[String(input.index).trim().padStart(2, "0")] ?? SECTION_PALETTE_DEFAULT).banner,
     bandCount,
+  };
+}
+
+// --- State-matrix helper -----------------------------------------------------
+// Builds a complete, lint-clean "Section / 06 State Matrix" band in one call:
+// a colored banner strip + a "Matrix / Header Row" of state columns + one
+// "Matrix / Row / <component>" per component whose every "Matrix Cell" holds a
+// filled variant. Satisfies incomplete-section-banner, missing-state-matrix-
+// headers, empty-state-cell, and background-z-order by construction.
+
+const STATE_VARIANT: Record<string, { fill: string; label: string }> = {
+  default: { fill: "#0F766E", label: "#FFFFFF" },
+  hover: { fill: "#115E59", label: "#FFFFFF" },
+  focus: { fill: "#0D9488", label: "#FFFFFF" },
+  active: { fill: "#134E4A", label: "#FFFFFF" },
+  selected: { fill: "#0F766E", label: "#FFFFFF" },
+  disabled: { fill: "#CBD5E1", label: "#64748B" },
+  loading: { fill: "#94A3B8", label: "#FFFFFF" },
+  empty: { fill: "#F1F5F9", label: "#94A3B8" },
+  error: { fill: "#DC2626", label: "#FFFFFF" },
+  success: { fill: "#16A34A", label: "#FFFFFF" },
+};
+const STATE_VARIANT_DEFAULT = { fill: "#0F766E", label: "#FFFFFF" };
+
+export interface StateMatrixInput {
+  components: string[];
+  states: string[];
+  index?: string;
+  title?: string;
+  subtitle?: string;
+  x?: number;
+  y?: number;
+}
+
+/**
+ * Build a lint-clean "Section / 06 State Matrix" band (colored banner strip +
+ * Matrix / Header Row + Matrix / Row / <component> with every cell filled).
+ */
+export function buildStateMatrixSection(input: StateMatrixInput): OpenPencilNode {
+  const components = input.components.filter((c) => c.trim());
+  const states = input.states.filter((s) => s.trim());
+  if (components.length === 0) throw new OpenPencilError("at least one component is required");
+  if (states.length === 0) throw new OpenPencilError("at least one state is required");
+  const idx = String(input.index ?? "06").trim().padStart(2, "0");
+  const pal = SECTION_PALETTE[idx] ?? { banner: "#B45309", chip: "#92400E", accent: "#FBBF24" };
+  const title = input.title?.trim() || "State Matrix";
+
+  const BANNER_H = 96;
+  const GRID_PAD = 32;
+  const ROW_HEADER_W = 200;
+  const CELL_W = 180;
+  const CELL_H = 110;
+  const HEADER_H = 44;
+  const GUTTER = 40;
+  const gridW = ROW_HEADER_W + states.length * CELL_W;
+  const width = Math.max(1200, GUTTER * 2 + gridW);
+  const gridTop = BANNER_H + GRID_PAD;
+  const height = gridTop + HEADER_H + components.length * CELL_H + GRID_PAD;
+  const x = input.x ?? 0;
+  const y = input.y ?? 0;
+  const id = `sec-${idx}-${randomBytes(4).toString("hex")}`;
+  const textWidth = Math.max(200, width - 300);
+
+  // --- grid: header row ---
+  const headerChildren: OpenPencilNode[] = states.map((state, i) => ({
+    id: `${id}-h-${i}`,
+    type: "text",
+    name: `Header ${state}`,
+    x: ROW_HEADER_W + i * CELL_W + 12,
+    y: 14,
+    width: CELL_W - 24,
+    height: 20,
+    fill: paint("#374151"),
+    fontFamily: "Inter",
+    fontWeight: 600,
+    fontSize: 13,
+    content: state.toUpperCase(),
+  }));
+  const headerRow: OpenPencilNode = {
+    id: `${id}-hdr`,
+    type: "frame",
+    name: "Matrix / Header Row",
+    x: GUTTER,
+    y: gridTop,
+    width: gridW,
+    height: HEADER_H,
+    fill: paint("#F3F4F6"),
+    children: headerChildren,
+  };
+
+  // --- grid: one row per component ---
+  const rows: OpenPencilNode[] = components.map((component, r) => {
+    const rid = `${id}-r${r}`;
+    const cells: OpenPencilNode[] = states.map((state, i) => {
+      const v = STATE_VARIANT[state.trim().toLowerCase()] ?? STATE_VARIANT_DEFAULT;
+      const variant: OpenPencilNode = {
+        id: `${rid}-c${i}-v`,
+        type: "frame",
+        name: `Component / ${component} / ${state}`,
+        x: (CELL_W - 120) / 2,
+        y: (CELL_H - 40) / 2,
+        width: 120,
+        height: 40,
+        fill: paint(v.fill),
+        children: [
+          {
+            id: `${rid}-c${i}-l`,
+            type: "text",
+            name: "Label",
+            x: 0,
+            y: 11,
+            width: 120,
+            height: 18,
+            fill: paint(v.label),
+            fontFamily: "Inter",
+            fontWeight: 600,
+            fontSize: 13,
+            textAlign: "center",
+            content: "Aa",
+          },
+        ],
+      };
+      return {
+        id: `${rid}-c${i}`,
+        type: "frame",
+        name: `Matrix Cell / ${component} / ${state}`,
+        x: ROW_HEADER_W + i * CELL_W,
+        y: 0,
+        width: CELL_W,
+        height: CELL_H,
+        fill: paint("#FFFFFF"),
+        children: [variant],
+      } as OpenPencilNode;
+    });
+    return {
+      id: rid,
+      type: "frame",
+      name: `Matrix / Row / ${component}`,
+      x: GUTTER,
+      y: gridTop + HEADER_H + r * CELL_H,
+      width: gridW,
+      height: CELL_H,
+      fill: paint("#FFFFFF"),
+      // Row Header Panel is a background for the left column, so (like Banner BG)
+      // it must be the LAST child to paint behind the label.
+      children: [
+        { id: `${rid}-hl`, type: "text", name: "Row Header Label", x: 16, y: Math.round(CELL_H / 2 - 10), width: ROW_HEADER_W - 32, height: 20, fill: paint("#111827"), fontFamily: "Inter", fontWeight: 600, fontSize: 14, content: component },
+        ...cells,
+        { id: `${rid}-hp`, type: "rectangle", name: "Row Header Panel", x: 0, y: 0, width: ROW_HEADER_W, height: CELL_H, fill: paint("#F9FAFB") },
+      ],
+    };
+  });
+
+  // --- banner chrome (strip on top), Banner BG last so it paints behind text ---
+  const bannerChrome: OpenPencilNode[] = [
+    { id: `${id}-tab`, type: "rectangle", name: "Divider Tab", x: 0, y: 0, width: 6, height: BANNER_H, fill: paint(pal.accent) },
+    { id: `${id}-chip`, type: "rectangle", name: "Index Chip", x: 40, y: 20, width: 88, height: 56, fill: paint(pal.chip) },
+    { id: `${id}-num`, type: "text", name: "Index Number", x: 40, y: 32, width: 88, height: 36, fill: paint("#FFFFFF"), fontFamily: "Inter", fontWeight: 700, fontSize: 28, content: idx },
+    { id: `${id}-title`, type: "text", name: "Section Title", x: 152, y: 22, width: textWidth, height: 42, fill: paint("#FFFFFF"), fontFamily: "Inter", fontWeight: 700, fontSize: 34, content: title },
+  ];
+  if (input.subtitle?.trim()) {
+    bannerChrome.push({ id: `${id}-sub`, type: "text", name: "Section Subtitle", x: 152, y: 64, width: textWidth, height: 22, fill: paint("#E5E7EB"), fontFamily: "Inter", fontWeight: 400, fontSize: 16, content: input.subtitle });
+  }
+  const bannerBg: OpenPencilNode = { id: `${id}-bg`, type: "rectangle", name: "Banner BG", x: 0, y: 0, width, height: BANNER_H, fill: paint(pal.banner) };
+
+  // grid first (painted on top — it sits below the banner strip), then banner
+  // chrome, then Banner BG last (painted behind the chrome).
+  return {
+    id,
+    type: "frame",
+    name: `Section / ${idx} ${title}`,
+    x,
+    y,
+    width,
+    height,
+    fill: paint("#FFFFFF"),
+    children: [headerRow, ...rows, ...bannerChrome, bannerBg],
+  };
+}
+
+export interface OpenPencilStateMatrixResult {
+  nodeId: string;
+  name: string;
+  y: number;
+  width: number;
+  height: number;
+  rows: number;
+  columns: number;
+  cells: number;
+}
+
+/** Author a complete state-matrix band directly into a guarded .op file. */
+export async function openPencilInsertStateMatrix(
+  config: AppConfig,
+  guard: PathGuard,
+  ws: Workspace,
+  input: StateMatrixInput & { path: string; page?: string },
+): Promise<OpenPencilStateMatrixResult> {
+  assertEnabled(config);
+  if (!Array.isArray(input.components) || input.components.filter((c) => c.trim()).length === 0) {
+    throw new OpenPencilError("components must be a non-empty array of strings");
+  }
+  if (!Array.isArray(input.states) || input.states.filter((s) => s.trim()).length === 0) {
+    throw new OpenPencilError("states must be a non-empty array of strings");
+  }
+  if (input.components.length > 30 || input.states.length > 12) {
+    throw new OpenPencilError("too many components (max 30) or states (max 12)");
+  }
+  const target = await resolveOpWrite(guard, ws, input.path);
+
+  let doc: OpDocument | null = null;
+  try {
+    doc = JSON.parse(await readFile(target, "utf8")) as OpDocument;
+  } catch {
+    doc = null;
+  }
+  if (!doc || typeof doc !== "object") {
+    doc = { version: "1.0.0", name: basename(input.path).replace(/\.op$/i, ""), pages: [{ id: "p", name: "Page 1", children: [] }], children: [] };
+  }
+  if (!Array.isArray(doc.pages) || doc.pages.length === 0) doc.pages = [{ id: "p", name: "Page 1", children: [] }];
+  const page = (input.page ? doc.pages.find((p) => p.id === input.page) : undefined) ?? doc.pages[0]!;
+  if (!Array.isArray(page.children)) page.children = [];
+
+  let y = input.y;
+  if (y === undefined) {
+    let maxBottom = -Infinity;
+    for (const child of page.children) {
+      if (typeof child?.name === "string" && /^Section \//.test(child.name)) {
+        maxBottom = Math.max(maxBottom, (child.y ?? 0) + (child.height ?? 96));
+      }
+    }
+    y = Number.isFinite(maxBottom) ? maxBottom + 160 : 0;
+  }
+
+  const node = buildStateMatrixSection({ ...input, y });
+  page.children.push(node);
+  await writeFile(target, JSON.stringify(doc), "utf8");
+
+  const components = input.components.filter((c) => c.trim()).length;
+  const states = input.states.filter((s) => s.trim()).length;
+  return {
+    nodeId: node.id!,
+    name: node.name!,
+    y,
+    width: node.width ?? 1200,
+    height: node.height ?? 96,
+    rows: components,
+    columns: states,
+    cells: components * states,
   };
 }

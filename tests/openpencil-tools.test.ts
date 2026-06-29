@@ -9,6 +9,7 @@ import { makeApp } from "../src/http.js";
 import { OpenPencilPreviewManager } from "../src/openpencil-preview-tools.js";
 import {
   buildSectionBand,
+  buildStateMatrixSection,
   openPencilDelete,
   openPencilDesign,
   openPencilInsert,
@@ -374,6 +375,26 @@ it("buildSectionBand produces lint-clean, colored bands with Banner BG last", ()
   expect(band.name).toBe("Section / 00 Brief");
   // index is zero-padded
   expect(buildSectionBand({ index: "4", title: "X" }).name).toBe("Section / 04 X");
+});
+
+it("buildStateMatrixSection produces a lint-clean filled matrix with headers", () => {
+  const m = buildStateMatrixSection({ components: ["Button / Primary", "TextField"], states: ["Default", "Hover", "Disabled"], subtitle: "x" });
+  const summary = lintOpenPencilNodeTree([m]);
+  expect(summary.ok).toBe(true);
+  expect(summary.issues.find((i) => i.code === "empty-state-cell")).toBeUndefined();
+  expect(summary.issues.find((i) => i.code === "missing-state-matrix-headers")).toBeUndefined();
+  expect(summary.issues.find((i) => i.code === "incomplete-section-banner")).toBeUndefined();
+  expect(summary.issues.find((i) => i.code === "background-z-order")).toBeUndefined();
+  expect(m.name).toBe("Section / 06 State Matrix");
+  // It contains a Matrix / Header Row and a filled Matrix Cell for every cross.
+  const flat: string[] = [];
+  const walk = (n: { name?: string; children?: unknown }): void => {
+    if (n.name) flat.push(n.name);
+    if (Array.isArray(n.children)) n.children.forEach((c) => walk(c as { name?: string; children?: unknown }));
+  };
+  walk(m);
+  expect(flat).toContain("Matrix / Header Row");
+  expect(flat.filter((n) => n.startsWith("Matrix Cell /")).length).toBe(2 * 3);
 });
 
 async function fakeOp(): Promise<string> {
