@@ -377,6 +377,29 @@ it("buildSectionBand produces lint-clean, colored bands with Banner BG last", ()
   expect(buildSectionBand({ index: "4", title: "X" }).name).toBe("Section / 04 X");
 });
 
+it("flags fontFamily OpenPencil does not bundle (renders blank in the editor)", () => {
+  const summary = lintOpenPencilNodeTree([
+    {
+      id: "s",
+      type: "frame",
+      name: "Screen / X",
+      width: 1440,
+      height: 900,
+      children: [
+        { id: "t1", type: "text", name: "Headline", x: 0, y: 0, width: 400, height: 60, fill: [{ type: "solid", color: "#111" }], fontFamily: "F37 Analog", fontWeight: 700, fontSize: 48, content: "Hello" },
+        { id: "t2", type: "text", name: "Body", x: 0, y: 80, width: 400, height: 20, fill: [{ type: "solid", color: "#111" }], fontFamily: "Inter", fontWeight: 400, fontSize: 16, content: "ok" },
+        { id: "t3", type: "text", name: "Stack", x: 0, y: 120, width: 400, height: 20, fill: [{ type: "solid", color: "#111" }], fontFamily: "Helvetica, sans-serif", fontWeight: 400, fontSize: 16, content: "ok2" },
+        { id: "t4", type: "text", name: "CJK", x: 0, y: 160, width: 400, height: 20, fill: [{ type: "solid", color: "#111" }], fontFamily: "Noto Sans TC", fontWeight: 400, fontSize: 16, content: "繁中" },
+      ],
+    },
+  ]);
+  const issues = summary.issues.filter((i) => i.code === "unavailable-font-family");
+  expect(issues.find((i) => i.nodeId === "t1")).toBeDefined(); // F37 Analog -> not bundled
+  expect(issues.find((i) => i.nodeId === "t2")).toBeUndefined(); // Inter
+  expect(issues.find((i) => i.nodeId === "t3")).toBeUndefined(); // has sans-serif fallback
+  expect(issues.find((i) => i.nodeId === "t4")).toBeUndefined(); // Noto Sans TC
+});
+
 it("buildStateMatrixSection produces a lint-clean filled matrix with headers", () => {
   const m = buildStateMatrixSection({ components: ["Button / Primary", "TextField"], states: ["Default", "Hover", "Disabled"], subtitle: "x" });
   const summary = lintOpenPencilNodeTree([m]);

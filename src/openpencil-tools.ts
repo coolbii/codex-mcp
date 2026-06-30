@@ -336,6 +336,17 @@ function isGenericLayerName(name: string | undefined): boolean {
   return /^(rectangle|rect|text|frame|group|layer)\s*\d*$/i.test((name ?? "").trim());
 }
 
+// Fonts OpenPencil can actually render. A reference's own fonts (e.g. from
+// extract_design_reference) are NOT here — using them makes text render blank in
+// the editor even though a system-fallback screenshot can look fine.
+const BUNDLED_FONTS = new Set(["inter", "noto sans sc", "noto sans tc"]);
+const GENERIC_FONTS = new Set(["sans-serif", "serif", "monospace", "system-ui", "ui-sans-serif", "ui-monospace", "ui-serif", "-apple-system"]);
+function isBundledFont(family: string | undefined): boolean {
+  if (!family) return false;
+  const parts = family.split(",").map((p) => p.replace(/["']/g, "").trim().toLowerCase()).filter(Boolean);
+  return parts.some((p) => BUNDLED_FONTS.has(p) || GENERIC_FONTS.has(p));
+}
+
 function isFullFrameBackground(parent: OpenPencilNode, child: OpenPencilNode): boolean {
   const name = (child.name ?? "").toLowerCase();
   const bgName = /background|foundation|surface-base|surface base|bg/.test(name);
@@ -503,6 +514,15 @@ export function lintOpenPencilNodeTree(nodes: OpenPencilNode[]): OpenPencilLintS
           ...(node.id ? { nodeId: node.id } : {}),
           ...(node.name ? { nodeName: node.name } : {}),
           fix: 'Set a bundled UI font such as {"fontFamily":"Inter","fontWeight":400}. Use "Noto Sans SC" for Chinese text.',
+        });
+      } else if (!isBundledFont(node.fontFamily)) {
+        pushIssue(issues, {
+          severity: "error",
+          code: "unavailable-font-family",
+          message: `Text layer "${nodeLabel(node)}" uses fontFamily "${node.fontFamily}", which is NOT bundled with OpenPencil and renders blank/missing in the editor (a screenshot may still show it via system fallback, hiding the problem).`,
+          ...(node.id ? { nodeId: node.id } : {}),
+          ...(node.name ? { nodeName: node.name } : {}),
+          fix: 'Use a bundled font: "Inter" (Latin) or "Noto Sans SC"/"Noto Sans TC" (Chinese). A reference\'s own font (e.g. from extract_design_reference) is inspiration for type behavior only — never copy its font name into fontFamily.',
         });
       }
       if (typeof node.fontSize === "number" && node.fontSize < 11) {
