@@ -122,6 +122,35 @@ describe("loadConfig — shell", () => {
   });
 });
 
+describe("loadConfig — OpenPencil", () => {
+  it("OpenPencil bridge is disabled by default", async () => {
+    const dir = await tmp();
+    const cfg = loadConfig({ transport: "stdio", env: { ALLOWED_ROOTS: dir }, warn: silent });
+    expect(cfg.enableOpenPencil).toBe(false);
+    expect(cfg.openPencilCli).toBe("op");
+  });
+  it("enables OpenPencil with a bare CLI command", async () => {
+    const dir = await tmp();
+    const cfg = loadConfig({
+      transport: "stdio",
+      env: { ALLOWED_ROOTS: dir, ENABLE_OPENPENCIL: "1", OPENPENCIL_CLI: "op" },
+      warn: silent,
+    });
+    expect(cfg.enableOpenPencil).toBe(true);
+    expect(cfg.openPencilCli).toBe("op");
+  });
+  it("rejects unsafe OpenPencil CLI command names", async () => {
+    const dir = await tmp();
+    expect(() =>
+      loadConfig({
+        transport: "stdio",
+        env: { ALLOWED_ROOTS: dir, ENABLE_OPENPENCIL: "1", OPENPENCIL_CLI: "op;rm" },
+        warn: silent,
+      }),
+    ).toThrow(ConfigError);
+  });
+});
+
 describe("loadConfig — public URL", () => {
   it("rejects a URL that includes a path", async () => {
     const dir = await tmp();

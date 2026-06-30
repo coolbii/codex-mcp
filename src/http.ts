@@ -26,6 +26,7 @@ import { WorkspaceRegistry } from "./workspaces.js";
 import { SiteManager } from "./site-tools.js";
 import { AppPreviewManager } from "./app-preview-tools.js";
 import { EditSessionManager } from "./edit-session-tools.js";
+import { OpenPencilPreviewManager } from "./openpencil-preview-tools.js";
 
 export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
   const app = express();
@@ -40,8 +41,10 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
   const siteManager = new SiteManager(config, guard);
   const appPreviewManager = new AppPreviewManager(config, guard);
   const editSessionManager = new EditSessionManager(config, siteManager);
+  const openPencilPreviewManager = new OpenPencilPreviewManager(config);
   app.locals.appPreviewManager = appPreviewManager;
   app.locals.editSessionManager = editSessionManager;
+  app.locals.openPencilPreviewManager = openPencilPreviewManager;
 
   // Health check — unauthenticated, no sensitive info.
   app.get("/healthz", (_req: Request, res: Response) => {
@@ -60,7 +63,7 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
   // CSP so the model-written HTML/JS runs in an opaque origin and can never
   // touch the auth/token surface that shares this hostname.
   const previewGuard = hostOriginGuard(config.allowedHosts, config.allowedOrigins);
-  app.use(["/sites", "/app-previews", "/_next", "/edit-sessions"], previewGuard);
+  app.use(["/sites", "/app-previews", "/_next", "/edit-sessions", "/openpencil-previews"], previewGuard);
 
   app.get(/^\/sites\/([^/]+)(?:\/(.*))?$/, async (req: Request, res: Response) => {
     try {
@@ -109,6 +112,13 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
       await appPreviewManager.proxyPreview(previewId, req, res, path);
     } catch (err) {
       const e = err as Error;
+      audit({
+        event: "tool_call",
+        tool: "openpencil_preview_proxy",
+        path: req.path,
+        success: false,
+        detail: e.message,
+      });
       res.status(502).type("text/plain").send(e.message);
     }
   });
@@ -151,6 +161,20 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
     }
   });
 
+  app.all(/^\/openpencil-previews\/([^/]+)(?:\/(.*))?$/, async (req: Request, res: Response) => {
+    try {
+      const previewIdParam = req.params[0];
+      const previewId = Array.isArray(previewIdParam) ? previewIdParam[0] : previewIdParam;
+      if (!previewId) throw new Error("Missing OpenPencil preview id");
+      const pathParam = req.params[1];
+      const path = Array.isArray(pathParam) ? pathParam.join("/") : (pathParam ?? "");
+      await openPencilPreviewManager.proxyPreview(previewId, req, res, path);
+    } catch (err) {
+      const e = err as Error;
+      res.status(502).type("text/plain").send(e.message);
+    }
+  });
+
   // Edge Host/Origin guard for the MCP endpoint.
   app.use("/mcp", hostOriginGuard(config.allowedHosts, config.allowedOrigins));
 
@@ -159,6 +183,10 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
   // Shared across HTTP transport sessions. ChatGPT may open a workspace in one
   // session and invoke follow-up tools in another while reusing workspaceId.
   const registry = new WorkspaceRegistry(guard, config.allowedRoots);
+  // OpenPencil visual-review gate, shared like the registry: ChatGPT's stateless
+  // tool calls each get a fresh ephemeral McpServer, so the screenshot-unlocks-save
+  // state must live out here, not inside buildMcpServer.
+  const visualReviewedWorkspaces = new Set<string>();
 
   app.post("/mcp", auth.requireAuth, async (req: Request, res: Response) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
@@ -184,7 +212,7 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
           audit({ event: "session_close", workspaceId: sid, success: true });
         }
       };
-      const server = buildMcpServer(config, guard, registry, appPreviewManager, editSessionManager);
+      const server = buildMcpServer(config, guard, registry, appPreviewManager, editSessionManager, openPencilPreviewManager, visualReviewedWorkspaces);
       await server.connect(transport);
     } else {
       // ChatGPT frequently sends resources/read, tools/call, etc. WITHOUT
@@ -202,7 +230,7 @@ export function makeApp(config: AppConfig, guard: PathGuard): express.Express {
       res.on("close", () => {
         void ephemeral.close();
       });
-      const server = buildMcpServer(config, guard, registry, appPreviewManager, editSessionManager);
+      const server = buildMcpServer(config, guard, registry, appPreviewManager, editSessionManager, openPencilPreviewManager, visualReviewedWorkspaces);
       await server.connect(ephemeral);
       await ephemeral.handleRequest(req, res, req.body);
       return;

@@ -30,3 +30,9 @@ logs/
 # test / coverage
 coverage/
 .nyc_output/
+
+# Large CJK fonts fetched via `npm run fetch-fonts` (Inter is committed)
+assets/fonts/NotoSans*.ttf
+
+# OpenPencil render artifacts
+op-preview*.png

@@ -134,6 +134,41 @@ open_workspace → search_files / read_file → show_diff → edit_file
 | `install_packages` | ✗ | 選配。只有 `ENABLE_PACKAGE_INSTALL=1` 才會開；ChatGPT 推導 registry 套件，你審核清單，預設停用 install scripts。 |
 | `create_app` | ✗ | 選配。只有 `ENABLE_APP_SCAFFOLD=1` 才會開；預設建立隔離的 Nx + Next workspace。 |
 | `start_app_preview` | ✗ | 選配。只有 `ENABLE_APP_SCAFFOLD=1` 才會開；必要時安裝依賴、啟動 app dev server，並在 ChatGPT 顯示 preview。 |
+| `openpencil_*` | mixed | 選配。只有 `ENABLE_OPENPENCIL=1` 才會開；用固定 argv 控制可信任的 OpenPencil `op` CLI，且 `.op` 路徑仍受 PathGuard 限制。 |
+
+`create_canvas_project` 只適合內建的輕量 DevSpace 編輯器。若要原生
+OpenPencil / 類 Figma 的操作介面，請明確要求使用 OpenPencil，讓助理改用
+`openpencil_*` 原生編輯器工具。`openpencil_preview` 會把本機
+OpenPencil web/editor UI 代理到 ChatGPT preview iframe；如果 OpenPencil 已經
+在跑，會優先使用 `op status` 回報的實際 port。如果 ChatGPT 擋掉啟動 app 的
+動作，改用 `openpencil_attach_preview`；它只會接到已經在跑的 OpenPencil。
+編輯後再用 `openpencil_save` 存回 workspace。
+
+處理 `.op` 檔時，優先使用 OpenPencil 原生操作，不要直接手寫 JSON：
+
+- 顯示既有文件：先 `openpencil_open`，再 `openpencil_attach_preview`。
+- 產生或修改原生圖層：用 `openpencil_insert`、`openpencil_update`、
+  `openpencil_replace`、`openpencil_move`、`openpencil_delete` 操作 live canvas
+  或既有 `.op`。
+- 儲存或 attach preview 前：先跑 `openpencil_lint_design`。若出現
+  `background-z-order` 或 `empty-frame` 等 error，先修掉再 preview。
+- 產生畫面前，先定義 product UI brief、component hierarchy、token vocabulary
+  和 expected states。遵守
+  [openpencil-design-guidelines.md](openpencil-design-guidelines.md)，讓產物是
+  專業、可編輯的設計，而不是通用 AI wireframe。
+- 正式產品設計不要只產生單一畫面。應建立完整 design package：brief、
+  reference audit、information architecture、user flows、foundations、
+  components、state matrix、screens、responsive variants、review notes、
+  handoff。遵守 [openpencil-design-harness.md](openpencil-design-harness.md)。
+- 編輯前找 node id：用 `openpencil_read_nodes` 或 `openpencil_selection`。
+- 保留人工編輯：使用 `openpencil_save`。
+- 驗證檔案是否可解析：使用 `openpencil_get`。
+- 不要把 `openpencil_design` 當成自然語言 brief 入口；上游 `op design`
+  吃的是 OpenPencil 自己的結構化 DSL。
+- 除非使用者明確要求修復 raw file，否則不要用 `write_file` / `edit_file`
+  建立新的 `.op`。若必須 raw repair，保持原生結構
+  `{ version, name, pages, children }`；畫布節點放在 `pages[].children`，
+  top-level `children` 通常是 `[]`。
 
 網站 preview 會寫到 `<第一個 ALLOWED_ROOTS>/devspace-sites/<siteId>/`，
 並透過 `<PUBLIC_BASE_URL>/sites/<siteId>/` 提供預覽。詳細看

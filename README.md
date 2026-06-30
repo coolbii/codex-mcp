@@ -176,6 +176,7 @@ locally first with `node scripts/smoke-oauth.mjs`.
 | `install_packages` | ✗ | **Only if `ENABLE_PACKAGE_INSTALL=1`.** Install model-inferred registry packages with npm/pnpm/yarn/bun; install scripts disabled by default. |
 | `create_app` | ✗ | **Only if `ENABLE_APP_SCAFFOLD=1`.** Scaffold React/Next apps. Defaults to a clean isolated Nx + Next workspace (`mode=isolated`); use `mode=existing` only for a healthy existing Nx monorepo. |
 | `start_app_preview` | ✗ | **Only if `ENABLE_APP_SCAFFOLD=1`.** Install dependencies if needed, start a local Nx/Next dev server, and return a ChatGPT-rendered preview URL. |
+| `openpencil_status` / `openpencil_attach_preview` / `openpencil_start` / `openpencil_preview` / `openpencil_open` / `openpencil_save` / `openpencil_read_nodes` / `openpencil_lint_design` / `openpencil_selection` / `openpencil_insert` / `openpencil_update` / `openpencil_replace` / `openpencil_move` / `openpencil_delete` / `openpencil_design` / `openpencil_get` | mixed | **Only if `ENABLE_OPENPENCIL=1`.** Control the operator-trusted OpenPencil `op` CLI with fixed argv, PathGuard-confined `.op` files, native node operations, deterministic design lint checks, and an optional ChatGPT iframe preview proxy. |
 | `run_command` | ✗ | **Only if `ENABLE_SHELL=1`.** Allowlisted, no-shell command. |
 
 Every call (except `list_roots`/`open_workspace`/`list_workspaces`) takes the
@@ -185,6 +186,10 @@ Generated site previews are documented in
 [docs/generated-sites.md](docs/generated-sites.md). The default visual direction
 for generated pages lives in
 [docs/site-design-direction.md](docs/site-design-direction.md).
+OpenPencil product-design and component-organization rules live in
+[docs/openpencil-design-guidelines.md](docs/openpencil-design-guidelines.md).
+For complete product design artifacts, use the file-level harness in
+[docs/openpencil-design-harness.md](docs/openpencil-design-harness.md).
 
 ## Roadmap
 
