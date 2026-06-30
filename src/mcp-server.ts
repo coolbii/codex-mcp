@@ -29,6 +29,7 @@ import { SiteManager, SITE_ARCHETYPES } from "./site-tools.js";
 import { SecretGuard } from "./secret-guard.js";
 import { EditSessionManager } from "./edit-session-tools.js";
 import { OpenPencilPreviewManager } from "./openpencil-preview-tools.js";
+import { extractDesignReference, ExtractReferenceError } from "./extract-reference.js";
 import {
   openPencilDesign,
   openPencilDelete,
@@ -1335,6 +1336,73 @@ export function buildMcpServer(
               latestVersion: null,
             },
           );
+        }),
+    );
+  }
+
+  if (config.enableDesignExtract) {
+    server.registerTool(
+      "extract_design_reference",
+      {
+        title: "Extract design reference",
+        description:
+          "Load a PUBLIC reference page (real brand / successful product page) in a headless browser and extract its design language as concrete tokens — color palette, background colors, font families, type scale, font weights, spacing rhythm, border radii, and any CSS variables — plus a screenshot. " +
+          "Use this in the Reference Audit / Foundations stage so the design is grounded in real references instead of guessed from memory. Treat the result as research: reuse tone/tokens/structure, do not copy logo/text/images/layout/brand. Only http(s) public URLs are allowed (private/loopback hosts are blocked).",
+        inputSchema: {
+          url: z.string().url().describe("Public http(s) URL of the reference page."),
+          viewportWidth: z.number().int().min(320).max(3840).optional().describe("Viewport width (default 1440)."),
+          fullPage: z.boolean().optional().describe("Capture the full scrollable page instead of the viewport."),
+          timeoutMs: z.number().int().min(1000).max(60000).optional(),
+        },
+        outputSchema: {
+          url: z.string(),
+          finalUrl: z.string(),
+          title: z.string(),
+          colors: z.array(z.object({ color: z.string(), count: z.number() })),
+          backgrounds: z.array(z.object({ color: z.string(), count: z.number() })),
+          fontFamilies: z.array(z.string()),
+          typeScale: z.array(z.number()),
+          fontWeights: z.array(z.number()),
+          spacing: z.array(z.number()),
+          radii: z.array(z.number()),
+          cssVariables: z.record(z.string()),
+        },
+        annotations: { ...RO, title: "Extract design reference", openWorldHint: true },
+        _meta: {
+          "openai/toolInvocation/invoking": "Extracting design reference",
+          "openai/toolInvocation/invoked": "Design reference extracted",
+        },
+      },
+      async ({ url, viewportWidth, fullPage, timeoutMs }) =>
+        invoke("extract_design_reference", {}, async () => {
+          let r;
+          try {
+            r = await extractDesignReference({
+              url,
+              ...(viewportWidth !== undefined ? { viewportWidth } : {}),
+              ...(fullPage !== undefined ? { fullPage } : {}),
+              ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+            });
+          } catch (err) {
+            if (err instanceof ExtractReferenceError) return errorResult(`extract_design_reference failed: ${err.message}`);
+            throw err;
+          }
+          const summary =
+            `Reference: ${r.title} (${r.finalUrl})\n` +
+            `Colors: ${r.colors.map((c) => c.color).slice(0, 6).join(", ")}\n` +
+            `Backgrounds: ${r.backgrounds.map((c) => c.color).slice(0, 4).join(", ")}\n` +
+            `Fonts: ${r.fontFamilies.join(", ")} | type scale: ${r.typeScale.join("/")} | weights: ${r.fontWeights.join("/")}\n` +
+            `Spacing: ${r.spacing.join("/")} | radii: ${r.radii.join("/")}` +
+            (Object.keys(r.cssVariables).length ? `\nCSS vars: ${Object.keys(r.cssVariables).length} found` : "") +
+            "\nResearch only — reuse tone/tokens/structure into 01 Reference Audit + 04 Foundations; do not copy the brand's assets.";
+          const { screenshotBase64, ...structured } = r;
+          return {
+            content: [
+              { type: "text", text: summary },
+              { type: "image", data: screenshotBase64, mimeType: "image/png" },
+            ],
+            structuredContent: structured as unknown as Record<string, unknown>,
+          };
         }),
     );
   }

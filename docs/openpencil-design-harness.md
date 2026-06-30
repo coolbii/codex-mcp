@@ -249,7 +249,10 @@ answers back as a one-paragraph Brief and get an explicit "go".
 2. What surface and viewport(s)? (1440 desktop, 390 mobile, both…)
 3. Three adjectives for the feel — a real direction, not "modern".
 4. Reference source: a Figma file, a live URL, or screenshots to extract
-   structure and tokens from (not to copy)?
+   structure and tokens from (not to copy)? If a public URL is given and
+   `extract_design_reference` is available, call it to get the real palette, type
+   scale, weights, spacing, radii, and a screenshot — ground `01 / Reference
+   Audit` and `04 / Foundations` in those values instead of guessing.
 5. Existing brand tokens (color/type/spacing/radius), or should you propose a set
    for approval?
 6. Which components are in scope for `05` and the `06` state matrix?

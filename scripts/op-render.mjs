@@ -34,7 +34,7 @@ if (!live && !file) {
 
 // Use `op get` (reads disk/live reliably); `op read-nodes` can return stale (app
 // cache) or empty (JSON formatting) data. See readNodeTreeWithFallback in src.
-const args = ["get"];
+const args = ["get", "--depth", "50"];
 if (file) args.push("--file", file);
 
 let out;

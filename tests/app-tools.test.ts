@@ -34,6 +34,7 @@ function cfg(over: Partial<AppConfig>): AppConfig {
     enablePackageInstall: false,
     enableAppScaffold: false,
     enableOpenPencil: false,
+    enableDesignExtract: false,
     openPencilCli: "op",
     openPencilPreviewPort: 3000,
     maxReadBytes: 1_000_000,

@@ -42,6 +42,7 @@
   },
   "optionalDependencies": {
     "@resvg/resvg-js": "^2.6.2",
+    "playwright": "^1.61.1",
     "re2": "^1.24.1"
   }
 }

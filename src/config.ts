@@ -93,6 +93,8 @@ export interface AppConfig {
   openPencilCli: string;
   /** Local OpenPencil web/editor port to proxy into ChatGPT preview. */
   openPencilPreviewPort: number;
+  /** Design-reference extraction fetches public URLs (network egress), so opt-in. */
+  enableDesignExtract: boolean;
 
   /** Extra credential-file glob patterns (DENY_PATHS) beyond the built-ins.
    *  Denied paths are refused by read_file and hidden from find/search. */
@@ -498,6 +500,12 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
       "OpenPencil CLI bridge ENABLED. This starts/controls the operator-trusted OpenPencil app through fixed argv; keep it off unless needed.",
     );
   }
+  const enableDesignExtract = bool(env.ENABLE_DESIGN_EXTRACT, false);
+  if (enableDesignExtract) {
+    warn(
+      "Design-reference extraction ENABLED. The server will fetch model-supplied public URLs headlessly (SSRF-guarded to public hosts); keep it off unless needed.",
+    );
+  }
 
   const config: AppConfig = {
     host,
@@ -524,6 +532,7 @@ export function loadConfig(opts: LoadConfigOptions): AppConfig {
     enableOpenPencil,
     openPencilCli,
     openPencilPreviewPort,
+    enableDesignExtract,
     denyPaths: csv(env.DENY_PATHS),
     secretScan: bool(env.SECRET_SCAN, true),
     maxReadBytes: int(env.MAX_READ_BYTES, 2_000_000, "MAX_READ_BYTES"),
